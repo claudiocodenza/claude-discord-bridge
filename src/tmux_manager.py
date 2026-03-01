@@ -187,17 +187,28 @@ class TmuxManager:
             # Build claude command with options
             claude_args = options
             if resume and claude_session_id:
-                # Resume a specific conversation by its session ID
-                claude_args += f' --resume {claude_session_id}'
+                # Try to resume; if it fails (no prior conversation), start fresh
+                resume_args = f'{options} --resume {claude_session_id}'
+                fresh_args = f'{options} --session-id {claude_session_id}'
+                claude_args = None  # signal to use the retry wrapper below
             else:
                 # New conversation — pin it to this session ID
-                claude_args += f' --session-id {claude_session_id}'
+                claude_args = f'{options} --session-id {claude_session_id}'
+            prompt_suffix = ''
             if system_prompt:
                 # Escape single quotes in system prompt for shell
                 escaped_prompt = system_prompt.replace("'", "'\\''")
-                claude_args += f" --append-system-prompt '{escaped_prompt}'"
+                prompt_suffix = f" --append-system-prompt '{escaped_prompt}'"
 
-            claude_cmd = f'{env_exports} && cd "{work_dir}" && claude {claude_args}'.strip()
+            if claude_args is not None:
+                # Simple case: single command
+                claude_cmd = f'{env_exports} && cd "{work_dir}" && claude {claude_args}{prompt_suffix}'.strip()
+            else:
+                # Resume with fallback: try --resume first, fall back to --session-id
+                claude_cmd = (
+                    f'{env_exports} && cd "{work_dir}" && '
+                    f'(claude {resume_args}{prompt_suffix} || claude {fresh_args}{prompt_suffix})'
+                ).strip()
 
             # Wrap in a login shell so ~/.zshrc (or equivalent) is sourced,
             # ensuring env vars like LINEAR_API_TOKEN are available.
