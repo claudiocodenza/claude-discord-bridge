@@ -55,7 +55,12 @@ case "$TOOL_NAME" in
         MSG="> :page_facing_up: Wrote \`${FILE}\`"
         ;;
     Bash)
-        CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' | head -c 80)
+        CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+        # Skip dp commands — those are Discord responses, not progress
+        if echo "$CMD" | grep -qE '^\s*dp\s'; then
+            exit 0
+        fi
+        CMD=$(echo "$CMD" | head -c 80)
         # Escape backticks for Discord
         CMD=$(echo "$CMD" | sed 's/`/\\`/g')
         MSG="> :desktop: Ran \`${CMD}\`"
