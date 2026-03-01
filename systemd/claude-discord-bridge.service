@@ -7,10 +7,10 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/home/victor/agent-env/workspace/claude-discord-bridge
-ExecStart=/home/victor/agent-env/workspace/claude-discord-bridge/.venv/bin/python3 bin/vai
-ExecStop=/home/victor/agent-env/workspace/claude-discord-bridge/.venv/bin/python3 bin/vexit
+ExecStart=/home/victor/agent-env/workspace/claude-discord-bridge/bin/vai
+ExecStop=/home/victor/agent-env/workspace/claude-discord-bridge/bin/vexit
 Environment=HOME=/home/victor
-Environment=PATH=/home/victor/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/victor/agent-env/workspace/claude-discord-bridge/bin:/home/victor/.local/bin:/usr/local/bin:/usr/bin:/bin
 TimeoutStartSec=30
 TimeoutStopSec=30
 
