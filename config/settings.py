@@ -207,6 +207,7 @@ class SettingsManager:
         config = {
             'name': name,
             'session_num': session_num,
+            'tmux_session': f'cb-{name}',
             'work_dir': work_dir or env_vars.get('CLAUDE_WORK_DIR', os.getcwd()),
             'claude_options': claude_options or env_vars.get('CLAUDE_OPTIONS', ''),
             'system_prompt': system_prompt,

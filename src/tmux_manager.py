@@ -132,22 +132,37 @@ class TmuxManager:
         except subprocess.CalledProcessError:
             return []
 
+    @staticmethod
+    def _make_session_name(name: str) -> str:
+        """Build a tmux session name from a channel/session name.
+
+        Sanitizes the name to only contain characters valid for tmux session
+        names (alphanumeric, dash, underscore). Prefixes with 'cb-'.
+        """
+        sanitized = ''.join(c if c.isalnum() or c in '-_' else '-' for c in name)
+        return f"cb-{sanitized}"
+
     def create_claude_session(self, session_num: int, work_dir: str, options: str = "",
-                              channel_id: str = "", system_prompt: str = "") -> bool:
+                              channel_id: str = "", system_prompt: str = "",
+                              channel_name: str = "") -> bool:
         """Create a tmux session for Claude Code.
 
         Args:
-            session_num: Numeric session ID for tmux naming
+            session_num: Numeric session ID (used as fallback for naming)
             work_dir: Working directory for Claude CLI
             options: Claude CLI options (e.g. --dangerously-skip-permissions)
             channel_id: Discord channel ID (set as DISCORD_CHANNEL_ID env var for dp)
             system_prompt: Optional system prompt to pass to Claude CLI
+            channel_name: Human-readable name for the tmux session (e.g. 'projects')
         """
-        session_name = f"{self.claude_session_prefix}-{session_num}"
+        if channel_name:
+            session_name = self._make_session_name(channel_name)
+        else:
+            session_name = f"{self.claude_session_prefix}-{session_num}"
 
         # Check if session already exists
-        if self.is_claude_session_exists(session_num):
-            print(f"Claude session {session_num} already exists")
+        if self._has_session(session_name):
+            print(f"Claude session already exists: {session_name}")
             return True
 
         try:
@@ -171,15 +186,14 @@ class TmuxManager:
                 ["tmux", "new-session", "-d", "-s", session_name, claude_cmd],
                 check=True
             )
-            print(f"Created Claude session {session_num}: {session_name} (channel: {channel_id or 'none'})")
+            print(f"Created Claude session: {session_name} (channel: {channel_id or 'none'})")
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Error creating Claude session {session_num}: {e}")
+            print(f"Error creating Claude session {session_name}: {e}")
             return False
 
-    def is_claude_session_exists(self, session_num: int) -> bool:
-        """Check if a Claude Code session exists"""
-        session_name = f"{self.claude_session_prefix}-{session_num}"
+    def _has_session(self, session_name: str) -> bool:
+        """Check if a tmux session exists by exact name."""
         try:
             result = subprocess.run(
                 ["tmux", "has-session", "-t", session_name],
@@ -189,11 +203,21 @@ class TmuxManager:
         except FileNotFoundError:
             return False
 
-    def kill_claude_session(self, session_num: int) -> bool:
-        """Kill a Claude Code session"""
-        session_name = f"{self.claude_session_prefix}-{session_num}"
+    def is_claude_session_exists(self, session_num_or_name) -> bool:
+        """Check if a Claude Code session exists (by number or name)."""
+        if isinstance(session_num_or_name, str) and not session_num_or_name.isdigit():
+            return self._has_session(self._make_session_name(session_num_or_name))
+        session_name = f"{self.claude_session_prefix}-{session_num_or_name}"
+        return self._has_session(session_name)
 
-        if not self.is_claude_session_exists(session_num):
+    def kill_claude_session(self, session_num_or_name) -> bool:
+        """Kill a Claude Code session (by number or name)."""
+        if isinstance(session_num_or_name, str) and not session_num_or_name.isdigit():
+            session_name = self._make_session_name(session_num_or_name)
+        else:
+            session_name = f"{self.claude_session_prefix}-{session_num_or_name}"
+
+        if not self._has_session(session_name):
             return True
 
         try:
@@ -201,10 +225,10 @@ class TmuxManager:
                 ["tmux", "kill-session", "-t", session_name],
                 check=True
             )
-            print(f"✅ Killed Claude session {session_num}: {session_name}")
+            print(f"Killed Claude session: {session_name}")
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Error killing Claude session {session_num}: {e}")
+            print(f"Error killing Claude session {session_name}: {e}")
             return False
 
     def kill_all_claude_sessions(self) -> bool:
@@ -219,12 +243,13 @@ class TmuxManager:
 
             if result.returncode == 0:
                 sessions = result.stdout.strip().split('\n')
-                claude_sessions = [s for s in sessions if s.startswith(self.claude_session_prefix)]
+                claude_sessions = [s for s in sessions
+                                   if s.startswith(self.claude_session_prefix) or s.startswith('cb-')]
 
                 for session in claude_sessions:
                     try:
                         subprocess.run(["tmux", "kill-session", "-t", session], check=True)
-                        print(f"✅ Killed Claude session: {session}")
+                        print(f"Killed Claude session: {session}")
                     except subprocess.CalledProcessError:
                         pass
 
@@ -233,7 +258,7 @@ class TmuxManager:
             return True
 
     def list_claude_sessions(self) -> list:
-        """Get the list of Claude Code sessions"""
+        """Get the list of Claude Code sessions (both legacy and named)."""
         sessions = []
         try:
             result = subprocess.run(
@@ -244,17 +269,19 @@ class TmuxManager:
 
             if result.returncode == 0:
                 all_sessions = result.stdout.strip().split('\n')
-                claude_sessions = [s for s in all_sessions if s.startswith(self.claude_session_prefix)]
+                for session in all_sessions:
+                    if session.startswith(self.claude_session_prefix):
+                        # Legacy: claude-session-N
+                        try:
+                            num = int(session.split('-')[-1])
+                            sessions.append((num, session))
+                        except ValueError:
+                            sessions.append((0, session))
+                    elif session.startswith('cb-'):
+                        # Named: cb-{name}
+                        sessions.append((0, session))
 
-                for session in claude_sessions:
-                    # Extract session number
-                    try:
-                        num = int(session.split('-')[-1])
-                        sessions.append((num, session))
-                    except ValueError:
-                        pass
-
-                sessions.sort(key=lambda x: x[0])
+                sessions.sort(key=lambda x: (x[0], x[1]))
 
             return sessions
         except subprocess.CalledProcessError:

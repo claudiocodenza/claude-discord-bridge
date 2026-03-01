@@ -66,9 +66,11 @@ def cmd_start():
             claude_options = cfg['claude_options']
             system_prompt = cfg.get('system_prompt', '')
 
+            channel_name = cfg.get('name', '')
             if tmux.create_claude_session(
                 session_num, work_dir, claude_options,
-                channel_id=channel_id, system_prompt=system_prompt
+                channel_id=channel_id, system_prompt=system_prompt,
+                channel_name=channel_name
             ):
                 time.sleep(1)
             else:
@@ -114,7 +116,8 @@ def cmd_start():
     if channels:
         print(f"\nClaude Code Channel Sessions:")
         for ch_id, cfg in channels:
-            print(f"  #{cfg['name']} (session {cfg['session_num']}) -> {cfg['work_dir']}")
+            tmux_name = cfg.get('tmux_session', f"cb-{cfg['name']}")
+            print(f"  {tmux_name} -> {cfg['work_dir']}")
     else:
         claude_sessions = tmux.list_claude_sessions()
         if claude_sessions:
@@ -155,9 +158,10 @@ def cmd_status():
     print("\nChannel Sessions:")
     if channels:
         for ch_id, cfg in channels:
-            session_num = cfg['session_num']
-            running = "Running" if tmux.is_claude_session_exists(session_num) else "Stopped"
-            print(f"  #{cfg['name']} (session {session_num}): {running} -> {cfg['work_dir']}")
+            channel_name = cfg.get('name', '')
+            tmux_name = cfg.get('tmux_session', f'cb-{channel_name}')
+            running = "Running" if tmux.is_claude_session_exists(channel_name or cfg['session_num']) else "Stopped"
+            print(f"  {tmux_name}: {running} -> {cfg['work_dir']}")
     else:
         # Fallback to legacy
         sessions = settings.list_sessions()

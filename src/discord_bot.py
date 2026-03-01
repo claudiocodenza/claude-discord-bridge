@@ -41,8 +41,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Category name for Claude session channels
+# Category names for Claude session channels
 CLAUDE_CATEGORY_NAME = "Claude Sessions"
+CLAUDE_ARCHIVE_CATEGORY_NAME = "Archived Sessions"
 
 
 class MessageProcessor:
@@ -258,6 +259,7 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
                 f'http://localhost:{flask_port}/channels/start',
                 json={
                     'channel_id': str(channel.id),
+                    'channel_name': name,
                     'session_num': session_num,
                     'work_dir': config['work_dir'],
                     'claude_options': config['claude_options'],
@@ -271,9 +273,10 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
             logger.warning(f"Could not start tmux session via API: {e}")
 
         await interaction.followup.send(
-            f"Created channel <#{channel.id}> with Claude session {session_num}\n"
+            f"Created channel <#{channel.id}> with Claude session `cb-{name}`\n"
             f"Work dir: `{config['work_dir']}`\n"
-            f"Options: `{config['claude_options'] or '(default)'}`",
+            f"Options: `{config['claude_options'] or '(default)'}`\n"
+            f"Attach: `tmux attach -t cb-{name}`",
             ephemeral=True,
         )
 
@@ -295,7 +298,10 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
             flask_port = settings.get_port('flask')
             requests.post(
                 f'http://localhost:{flask_port}/channels/stop',
-                json={'channel_id': channel_id, 'session_num': session_num},
+                json={
+                    'channel_name': cfg['name'],
+                    'session_num': session_num,
+                },
                 timeout=10,
             )
         except Exception as e:
@@ -304,15 +310,21 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
         # Mark as inactive
         settings.remove_channel_config(channel_id)
 
-        # Archive the Discord channel
+        # Move channel to Archived Sessions category
         try:
+            guild = interaction.guild
+            archive_category = discord.utils.get(guild.categories, name=CLAUDE_ARCHIVE_CATEGORY_NAME)
+            if archive_category is None:
+                archive_category = await guild.create_category(CLAUDE_ARCHIVE_CATEGORY_NAME)
+
             overwrites = {
-                interaction.guild.default_role: discord.PermissionOverwrite(
-                    send_messages=False, read_messages=False
+                guild.default_role: discord.PermissionOverwrite(
+                    send_messages=False,
                 )
             }
             await interaction.channel.edit(
                 name=f"archived-{cfg['name']}",
+                category=archive_category,
                 overwrites=overwrites,
             )
             await interaction.followup.send(
@@ -364,6 +376,8 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
             return
 
         # Update config
+        await interaction.response.defer(ephemeral=True)
+
         updates = {}
         if work_dir:
             updates['work_dir'] = work_dir
@@ -372,13 +386,44 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
         if system_prompt:
             updates['system_prompt'] = system_prompt
 
-        settings.update_channel_config(channel_id, **updates)
+        updated_cfg = settings.update_channel_config(channel_id, **updates)
+        session_num = updated_cfg['session_num']
 
-        await interaction.response.send_message(
-            f"Updated config. Restart the session (`/archive-channel` then `/new-channel`) "
-            f"for changes to take effect.",
-            ephemeral=True,
-        )
+        # Restart the tmux session with new config
+        channel_name = updated_cfg['name']
+        try:
+            flask_port = settings.get_port('flask')
+            # Stop old session
+            requests.post(
+                f'http://localhost:{flask_port}/channels/stop',
+                json={'channel_name': channel_name, 'session_num': session_num},
+                timeout=10,
+            )
+            # Start new session with updated config
+            requests.post(
+                f'http://localhost:{flask_port}/channels/start',
+                json={
+                    'channel_id': channel_id,
+                    'channel_name': channel_name,
+                    'session_num': session_num,
+                    'work_dir': updated_cfg['work_dir'],
+                    'claude_options': updated_cfg['claude_options'],
+                    'system_prompt': updated_cfg.get('system_prompt', ''),
+                },
+                timeout=10,
+            )
+            await interaction.followup.send(
+                f"Updated config and restarted `cb-{channel_name}`.\n"
+                f"Work dir: `{updated_cfg['work_dir']}`\n"
+                f"Options: `{updated_cfg['claude_options'] or '(default)'}`",
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.warning(f"Could not restart session: {e}")
+            await interaction.followup.send(
+                f"Updated config but could not restart session: {e}",
+                ephemeral=True,
+            )
 
     @bot.tree.command(name="list-channels", description="List all active Claude session channels")
     async def list_channels(interaction: discord.Interaction):
@@ -390,8 +435,9 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
 
         lines = ["**Active Claude Channels:**"]
         for ch_id, cfg in channels:
+            tmux_name = cfg.get('tmux_session', f"cb-{cfg['name']}")
             lines.append(
-                f"<#{ch_id}> (session {cfg['session_num']}) - "
+                f"<#{ch_id}> `{tmux_name}` - "
                 f"`{cfg['work_dir']}` - "
                 f"`{cfg['claude_options'] or '(default)'}`"
             )

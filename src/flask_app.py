@@ -41,14 +41,16 @@ class TmuxMessageForwarder:
     SESSION_NAME_PREFIX = "claude-session"
 
     @classmethod
-    def forward_message(cls, message: str, session_num: int) -> Tuple[bool, Optional[str]]:
+    def forward_message(cls, message: str, session_num: int,
+                        tmux_session: str = "") -> Tuple[bool, Optional[str]]:
         """Forward a message to the specified tmux session."""
         try:
-            session_name = f"{cls.SESSION_NAME_PREFIX}-{session_num}"
+            # Use named session if provided, otherwise fall back to numeric
+            session_name = tmux_session or f"{cls.SESSION_NAME_PREFIX}-{session_num}"
             cls._send_tmux_keys(session_name, message)
             time.sleep(cls.TMUX_DELAY_SECONDS)
             cls._send_tmux_keys(session_name, 'C-m')
-            logger.info(f"Message forwarded to session {session_num}")
+            logger.info(f"Message forwarded to {session_name}")
             return True, None
         except subprocess.CalledProcessError as e:
             error_msg = f"tmux command failed: {e}"
@@ -108,15 +110,17 @@ class FlaskBridgeApp:
             message = data.get('message', '')
             channel_id = data.get('channel_id', '')
             session_num = data.get('session')
+            tmux_session = ''
 
             if not message:
                 return jsonify({'error': 'Missing message'}), 400
 
-            # Look up session_num from channel config if not provided
-            if session_num is None and channel_id:
-                sn = self.settings.channel_id_to_session_num(channel_id)
-                if sn is not None:
-                    session_num = sn
+            # Look up tmux session name from channel config
+            if channel_id:
+                cfg = self.settings.get_channel_config(channel_id)
+                if cfg and cfg.get('active', True):
+                    session_num = cfg['session_num']
+                    tmux_session = cfg.get('tmux_session', '')
 
             # Fall back to legacy session lookup
             if session_num is None and channel_id:
@@ -129,9 +133,12 @@ class FlaskBridgeApp:
 
             username = data.get('username', 'Unknown')
             preview = message[:100] + "..." if len(message) > 100 else message
-            print(f"[Channel {channel_id} / Session {session_num}] {username}: {preview}")
+            target = tmux_session or f"session-{session_num}"
+            print(f"[{target}] {username}: {preview}")
 
-            success, error_msg = self.message_forwarder.forward_message(message, session_num)
+            success, error_msg = self.message_forwarder.forward_message(
+                message, session_num, tmux_session=tmux_session
+            )
             if not success:
                 return jsonify({'error': error_msg}), 500
 
@@ -155,6 +162,7 @@ class FlaskBridgeApp:
 
             channel_id = data.get('channel_id', '')
             session_num = data.get('session_num')
+            channel_name = data.get('channel_name', '')
             work_dir = data.get('work_dir', '')
             claude_options = data.get('claude_options', '')
             system_prompt = data.get('system_prompt', '')
@@ -168,6 +176,7 @@ class FlaskBridgeApp:
                 options=claude_options,
                 channel_id=channel_id,
                 system_prompt=system_prompt,
+                channel_name=channel_name,
             )
 
             if success:
@@ -186,12 +195,17 @@ class FlaskBridgeApp:
             if not data:
                 return jsonify({'error': 'No data provided'}), 400
 
+            channel_name = data.get('channel_name', '')
             session_num = data.get('session_num')
-            if session_num is None:
-                return jsonify({'error': 'Missing session_num'}), 400
 
-            success = self.tmux_manager.kill_claude_session(session_num)
-            return jsonify({'status': 'stopped' if success else 'not_found', 'session_num': session_num})
+            if channel_name:
+                success = self.tmux_manager.kill_claude_session(channel_name)
+            elif session_num is not None:
+                success = self.tmux_manager.kill_claude_session(session_num)
+            else:
+                return jsonify({'error': 'Missing channel_name or session_num'}), 400
+
+            return jsonify({'status': 'stopped' if success else 'not_found'})
 
         except Exception as e:
             logger.error(f"Error stopping channel session: {e}", exc_info=True)
