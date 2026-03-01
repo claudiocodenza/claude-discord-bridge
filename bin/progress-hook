@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# progress-hook — Claude Code PostToolUse hook
+# Sends brief progress updates to Discord as Claude works.
+#
+# Reads PostToolUse event JSON from stdin, formats a one-line status,
+# and posts it to the Discord channel via REST API.
+#
+# Only fires when DISCORD_CHANNEL_ID is set (i.e., inside a bridge session).
+# Rate-limited to avoid flooding the channel.
+#
+
+set -euo pipefail
+
+# Only run inside bridge sessions
+CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
+if [ -z "$CHANNEL_ID" ]; then
+    exit 0
+fi
+
+# Rate limit: max 1 update per 3 seconds
+RATE_LIMIT_FILE="/tmp/claude-progress-${CHANNEL_ID}.last"
+NOW=$(date +%s)
+if [ -f "$RATE_LIMIT_FILE" ]; then
+    LAST=$(cat "$RATE_LIMIT_FILE" 2>/dev/null || echo 0)
+    ELAPSED=$((NOW - LAST))
+    if [ "$ELAPSED" -lt 3 ]; then
+        exit 0
+    fi
+fi
+
+# Read event JSON from stdin
+INPUT=$(cat)
+
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+if [ -z "$TOOL_NAME" ]; then
+    exit 0
+fi
+
+# Format progress message based on tool type
+case "$TOOL_NAME" in
+    Read)
+        FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+        FILE=$(basename "$FILE" 2>/dev/null || echo "$FILE")
+        MSG="> :mag: Reading \`${FILE}\`"
+        ;;
+    Edit)
+        FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+        FILE=$(basename "$FILE" 2>/dev/null || echo "$FILE")
+        MSG="> :pencil2: Edited \`${FILE}\`"
+        ;;
+    Write)
+        FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+        FILE=$(basename "$FILE" 2>/dev/null || echo "$FILE")
+        MSG="> :page_facing_up: Wrote \`${FILE}\`"
+        ;;
+    Bash)
+        CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' | head -c 80)
+        # Escape backticks for Discord
+        CMD=$(echo "$CMD" | sed 's/`/\\`/g')
+        MSG="> :desktop: Ran \`${CMD}\`"
+        ;;
+    Grep)
+        PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty' | head -c 60)
+        MSG="> :mag_right: Searched for \`${PATTERN}\`"
+        ;;
+    Glob)
+        PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty')
+        MSG="> :file_folder: Globbing \`${PATTERN}\`"
+        ;;
+    WebFetch)
+        URL=$(echo "$INPUT" | jq -r '.tool_input.url // empty' | head -c 80)
+        MSG="> :globe_with_meridians: Fetched ${URL}"
+        ;;
+    WebSearch)
+        QUERY=$(echo "$INPUT" | jq -r '.tool_input.query // empty' | head -c 80)
+        MSG="> :mag: Searched: \`${QUERY}\`"
+        ;;
+    Agent)
+        DESC=$(echo "$INPUT" | jq -r '.tool_input.description // empty' | head -c 80)
+        MSG="> :robot: Agent: ${DESC}"
+        ;;
+    mcp__linear__*)
+        # Linear MCP tools
+        SHORT="${TOOL_NAME#mcp__linear__}"
+        MSG="> :clipboard: Linear: \`${SHORT}\`"
+        ;;
+    mcp__*)
+        # Other MCP tools
+        MSG="> :electric_plug: MCP: \`${TOOL_NAME}\`"
+        ;;
+    TaskCreate|TaskUpdate|TaskList|TaskGet)
+        # Task management — skip, too noisy
+        exit 0
+        ;;
+    *)
+        MSG="> :gear: ${TOOL_NAME}"
+        ;;
+esac
+
+# Get bot token from .env
+ENV_FILE="${HOME}/.claude-discord-bridge/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    exit 0
+fi
+BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
+if [ -z "$BOT_TOKEN" ]; then
+    exit 0
+fi
+
+# Post to Discord via REST API
+curl -s -o /dev/null \
+    -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
+    -H "Authorization: Bot ${BOT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg content "$MSG" '{content: $content}')" &
+
+# Update rate limit timestamp
+echo "$NOW" > "$RATE_LIMIT_FILE"
+
+exit 0
