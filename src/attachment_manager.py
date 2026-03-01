@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Attachment Manager - Discord添付ファイル管理システム
+Attachment Manager - Discord attachment file management system
 
-このモジュールは以下の責任を持つ：
-1. Discord添付ファイルの非同期ダウンロード
-2. ファイル形式の検証とサイズ制限管理
-3. 自動ファイル命名と重複回避
-4. ストレージ管理と自動クリーンアップ
-5. Claude Code連携用パス生成
+This module is responsible for:
+1. Asynchronous downloading of Discord attachments
+2. File format validation and size limit management
+3. Automatic file naming and duplicate avoidance
+4. Storage management and automatic cleanup
+5. Path generation for Claude Code integration
 
-拡張性のポイント：
-- 新しいファイル形式のサポート追加
-- ファイル変換・処理機能の実装
-- 外部ストレージ連携（S3、GCS等）
-- ウイルススキャン・セキュリティ機能
-- メタデータ抽出・分析機能
+Extensibility points:
+- Adding support for new file formats
+- Implementing file conversion/processing features
+- External storage integration (S3, GCS, etc.)
+- Virus scanning and security features
+- Metadata extraction and analysis
 """
 
 import os
@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
-# パッケージルートの追加（相対インポート対応）
+# Add package root to path (for relative imports)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
@@ -38,18 +38,18 @@ except ImportError:
 
 from config.settings import SettingsManager
 
-# ログ設定
+# Logging configuration
 logger = logging.getLogger(__name__)
 
 @dataclass
 class FileMetadata:
     """
-    ファイルメタデータ管理用データクラス
-    
-    拡張ポイント：
-    - 追加メタデータフィールド
-    - ファイル分析結果
-    - 変換処理情報
+    Data class for file metadata management
+
+    Extension points:
+    - Additional metadata fields
+    - File analysis results
+    - Conversion processing info
     """
     original_name: str
     saved_name: str
@@ -61,133 +61,133 @@ class FileMetadata:
 
 class FileValidator:
     """
-    ファイル検証処理
-    
-    将来の拡張：
-    - MIME type詳細検証
-    - ファイル内容スキャン
-    - ウイルス検査連携
-    - カスタム検証ルール
+    File validation processing
+
+    Future extensions:
+    - Detailed MIME type validation
+    - File content scanning
+    - Virus scan integration
+    - Custom validation rules
     """
-    
-    # サポートする画像形式（拡張可能）
+
+    # Supported image formats (extensible)
     SUPPORTED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff'}
-    
-    # ファイルサイズ制限（Discord制限に準拠、将来は設定可能）
+
+    # File size limit (compliant with Discord limits; configurable in the future)
     MAX_FILE_SIZE = 8 * 1024 * 1024  # 8MB
-    
+
     @classmethod
     def is_supported_format(cls, filename: str) -> bool:
         """
-        サポートされているファイル形式かチェック
-        
-        拡張ポイント：
-        - 動的サポート形式管理
-        - MIME type検証
-        - カスタム形式定義
+        Check if the file format is supported
+
+        Extension points:
+        - Dynamic supported format management
+        - MIME type validation
+        - Custom format definitions
         """
         return Path(filename).suffix.lower() in cls.SUPPORTED_EXTENSIONS
-    
+
     @classmethod
     def is_valid_size(cls, size: int) -> bool:
         """
-        ファイルサイズが制限内かチェック
-        
-        拡張ポイント：
-        - ユーザー別サイズ制限
-        - 動的制限設定
-        - 圧縮処理による制限回避
+        Check if the file size is within limits
+
+        Extension points:
+        - Per-user size limits
+        - Dynamic limit configuration
+        - Compression to bypass limits
         """
         return size <= cls.MAX_FILE_SIZE
-    
+
     @classmethod
     def validate_attachment(cls, attachment) -> Tuple[bool, Optional[str]]:
         """
-        添付ファイルの総合検証
-        
+        Comprehensive attachment validation
+
         Args:
             attachment: Discord attachment object
-        
+
         Returns:
-            Tuple[bool, Optional[str]]: (有効フラグ, エラーメッセージ)
+            Tuple[bool, Optional[str]]: (validity flag, error message)
         """
-        # ファイル形式チェック
+        # File format check
         if not cls.is_supported_format(attachment.filename):
             return False, f"Unsupported file format: {attachment.filename}"
-        
-        # ファイルサイズチェック
+
+        # File size check
         if not cls.is_valid_size(attachment.size):
             return False, f"File too large ({attachment.size} bytes, max {cls.MAX_FILE_SIZE})"
-        
+
         return True, None
 
 class FileNamingStrategy:
     """
-    ファイル命名戦略
-    
-    将来の拡張：
-    - 命名規則のカスタマイズ
-    - ユーザー別命名空間
-    - コンテンツベース命名
-    - 重複回避アルゴリズム
+    File naming strategy
+
+    Future extensions:
+    - Customizable naming rules
+    - Per-user namespaces
+    - Content-based naming
+    - Duplicate avoidance algorithms
     """
-    
+
     @staticmethod
     def generate_unique_filename(original_name: str) -> str:
         """
-        一意なファイル名を生成
-        
-        拡張ポイント：
-        - 命名パターンの設定化
-        - ハッシュベース命名
-        - 日付フォーマットカスタマイズ
-        
+        Generate a unique filename
+
+        Extension points:
+        - Configurable naming patterns
+        - Hash-based naming
+        - Custom date format
+
         Args:
-            original_name: 元のファイル名
-        
+            original_name: Original filename
+
         Returns:
-            str: 生成された一意ファイル名
+            str: Generated unique filename
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        random_suffix = secrets.token_hex(3)  # 6文字のランダム文字列
+        random_suffix = secrets.token_hex(3)  # 6-character random string
         extension = Path(original_name).suffix.lower()
-        
-        # 拡張子が無い場合のデフォルト処理
+
+        # Default handling when no extension is present
         if not extension:
             extension = '.bin'
-        
+
         return f"IMG_{timestamp}_{random_suffix}{extension}"
 
 class StorageManager:
     """
-    ストレージ管理システム
-    
-    将来の拡張：
-    - 外部ストレージ対応（S3、GCS等）
-    - ストレージ階層化
-    - 自動バックアップ
-    - 容量制限管理
+    Storage management system
+
+    Future extensions:
+    - External storage support (S3, GCS, etc.)
+    - Storage tiering
+    - Automatic backups
+    - Capacity limit management
     """
-    
+
     def __init__(self, config_dir: Path):
         """
-        ストレージマネージャーの初期化
-        
+        Initialize the storage manager
+
         Args:
-            config_dir: 設定ディレクトリパス
+            config_dir: Configuration directory path
         """
         self.config_dir = config_dir
         self.attachments_dir = config_dir / 'attachments'
         self.ensure_storage_directory()
-    
+
     def ensure_storage_directory(self):
         """
-        ストレージディレクトリの作成・確認
-        
-        拡張ポイント：
-        - 権限設定の最適化
-        - 複数ディレクトリ管理
-        - 容量監視機能
+        Create/verify the storage directory
+
+        Extension points:
+        - Optimizing permission settings
+        - Managing multiple directories
+        - Capacity monitoring
         """
         try:
             self.attachments_dir.mkdir(parents=True, exist_ok=True)
@@ -195,71 +195,71 @@ class StorageManager:
         except Exception as e:
             logger.error(f"Failed to create storage directory: {e}")
             raise
-    
+
     def get_storage_path(self, filename: str) -> Path:
         """
-        ファイル保存パスを取得
-        
-        拡張ポイント：
-        - ディレクトリ階層化（日付別等）
-        - 負荷分散ディレクトリ選択
-        - 重複ファイル処理
+        Get the file storage path
+
+        Extension points:
+        - Directory hierarchy (e.g., by date)
+        - Load-balanced directory selection
+        - Duplicate file handling
         """
         return self.attachments_dir / filename
-    
+
     def cleanup_old_files(self, max_age_days: int = 1) -> int:
         """
-        古いファイルのクリーンアップ
-        
-        拡張ポイント：
-        - 詳細な削除ポリシー
-        - アーカイブ機能
-        - 削除前通知
-        
+        Clean up old files
+
+        Extension points:
+        - Detailed deletion policies
+        - Archiving
+        - Pre-deletion notifications
+
         Args:
-            max_age_days: 保持期間（日数）
-        
+            max_age_days: Retention period (in days)
+
         Returns:
-            int: 削除されたファイル数
+            int: Number of deleted files
         """
         if not self.attachments_dir.exists():
             return 0
-        
+
         try:
             cutoff_time = datetime.now() - timedelta(days=max_age_days)
             deleted_count = 0
-            
+
             for file_path in self.attachments_dir.glob('IMG_*'):
                 try:
-                    # ファイルの更新時刻を取得
+                    # Get the file's modification time
                     file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
-                    
+
                     if file_mtime < cutoff_time:
                         file_path.unlink()
                         deleted_count += 1
                         logger.info(f"Deleted old attachment: {file_path.name}")
-                        
+
                 except OSError as e:
                     logger.warning(f"Failed to delete {file_path.name}: {e}")
                     continue
-            
+
             if deleted_count > 0:
                 logger.info(f"Cleanup completed: {deleted_count} files deleted")
-            
+
             return deleted_count
-            
+
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
             return 0
-    
+
     def get_storage_info(self) -> Dict[str, Any]:
         """
-        ストレージ使用状況の取得
-        
-        拡張ポイント：
-        - 詳細統計情報
-        - ファイル種別分析
-        - 使用量予測
+        Get storage usage information
+
+        Extension points:
+        - Detailed statistics
+        - File type analysis
+        - Usage forecasting
         """
         try:
             if not self.attachments_dir.exists():
@@ -269,10 +269,10 @@ class StorageManager:
                     'total_size_mb': 0.0,
                     'directory': str(self.attachments_dir)
                 }
-            
+
             files = list(self.attachments_dir.glob('IMG_*'))
             total_size = sum(f.stat().st_size for f in files if f.is_file())
-            
+
             return {
                 'total_files': len(files),
                 'total_size': total_size,
@@ -280,7 +280,7 @@ class StorageManager:
                 'directory': str(self.attachments_dir),
                 'last_updated': datetime.now().isoformat()
             }
-            
+
         except Exception as e:
             logger.error(f"Error getting storage info: {e}")
             return {
@@ -293,62 +293,62 @@ class StorageManager:
 
 class AttachmentDownloader:
     """
-    非同期ファイルダウンロード処理
-    
-    将来の拡張：
-    - 並列ダウンロード数制御
-    - 進捗表示機能
-    - リトライ機構
-    - 帯域制限機能
+    Asynchronous file download processing
+
+    Future extensions:
+    - Concurrent download limit control
+    - Progress display
+    - Retry mechanism
+    - Bandwidth throttling
     """
-    
-    # 設定可能な定数（将来は設定ファイル化）
+
+    # Configurable constants (to be moved to config file in the future)
     DOWNLOAD_TIMEOUT_SECONDS = 30
     MAX_CONCURRENT_DOWNLOADS = 5
-    
+
     def __init__(self, storage_manager: StorageManager):
         """
-        ダウンローダーの初期化
-        
+        Initialize the downloader
+
         Args:
-            storage_manager: ストレージマネージャーインスタンス
+            storage_manager: Storage manager instance
         """
         self.storage_manager = storage_manager
         self.file_validator = FileValidator()
         self.naming_strategy = FileNamingStrategy()
-    
+
     async def download_attachment(self, attachment) -> Optional[FileMetadata]:
         """
-        Discord添付ファイルの非同期ダウンロード
-        
-        拡張ポイント：
-        - プログレスコールバック
-        - 部分ダウンロード対応
-        - ダウンロード優先度制御
-        
+        Asynchronously download a Discord attachment
+
+        Extension points:
+        - Progress callbacks
+        - Partial download support
+        - Download priority control
+
         Args:
             attachment: Discord attachment object
-        
+
         Returns:
-            Optional[FileMetadata]: ダウンロード成功時のメタデータ
+            Optional[FileMetadata]: Metadata on successful download
         """
         try:
-            # ステップ1: ファイル検証
+            # Step 1: File validation
             is_valid, error_msg = self.file_validator.validate_attachment(attachment)
             if not is_valid:
                 logger.warning(f"Invalid attachment {attachment.filename}: {error_msg}")
                 return None
-            
-            # ステップ2: ファイル名生成
+
+            # Step 2: Generate filename
             saved_filename = self.naming_strategy.generate_unique_filename(attachment.filename)
             file_path = self.storage_manager.get_storage_path(saved_filename)
-            
-            # ステップ3: ダウンロード実行
+
+            # Step 3: Perform download
             success = await self._perform_download(attachment.url, file_path)
             if not success:
                 return None
-            
-            # ステップ4: メタデータ作成
+
+            # Step 4: Create metadata
             metadata = FileMetadata(
                 original_name=attachment.filename,
                 saved_name=saved_filename,
@@ -357,22 +357,22 @@ class AttachmentDownloader:
                 download_url=attachment.url,
                 timestamp=datetime.now().isoformat()
             )
-            
+
             logger.info(f"Downloaded attachment: {saved_filename} ({attachment.size} bytes)")
             return metadata
-            
+
         except Exception as e:
             logger.error(f"Error downloading {attachment.filename}: {e}")
             return None
-    
+
     async def _perform_download(self, url: str, file_path: Path) -> bool:
         """
-        実際のダウンロード処理
-        
-        拡張ポイント：
-        - チャンク単位ダウンロード
-        - レジューム機能
-        - 進捗通知
+        Perform the actual download
+
+        Extension points:
+        - Chunked downloading
+        - Resume capability
+        - Progress notifications
         """
         try:
             timeout = aiohttp.ClientTimeout(total=self.DOWNLOAD_TIMEOUT_SECONDS)
@@ -380,19 +380,19 @@ class AttachmentDownloader:
                 async with session.get(url) as response:
                     if response.status == 200:
                         content = await response.read()
-                        
-                        # ファイル保存
+
+                        # Save file
                         with open(file_path, 'wb') as f:
                             f.write(content)
-                        
-                        # 権限設定（読み取り専用）
+
+                        # Set permissions (read-only)
                         os.chmod(file_path, 0o644)
-                        
+
                         return True
                     else:
                         logger.error(f"HTTP {response.status} for URL: {url}")
                         return False
-                        
+
         except asyncio.TimeoutError:
             logger.error(f"Download timeout for URL: {url}")
             return False
@@ -402,58 +402,58 @@ class AttachmentDownloader:
 
 class AttachmentManager:
     """
-    添付ファイル管理の統合クラス
-    
-    アーキテクチャ特徴：
-    - 非同期処理による高い並列性
-    - モジュラー設計による拡張性
-    - 堅牢なエラーハンドリング
-    - 自動リソース管理
-    
-    拡張可能要素：
-    - ファイル変換処理
-    - メタデータ抽出
-    - 外部API連携
-    - 統計・分析機能
-    - バックアップ・同期機能
+    Integrated attachment file management class
+
+    Architecture features:
+    - High concurrency via asynchronous processing
+    - Extensibility through modular design
+    - Robust error handling
+    - Automatic resource management
+
+    Extensible elements:
+    - File conversion processing
+    - Metadata extraction
+    - External API integration
+    - Statistics and analytics
+    - Backup and sync
     """
-    
+
     def __init__(self):
         """
-        添付ファイルマネージャーの初期化
+        Initialize the attachment manager
         """
         self.settings = SettingsManager()
         self.storage_manager = StorageManager(self.settings.config_dir)
         self.downloader = AttachmentDownloader(self.storage_manager)
-    
+
     async def process_attachments(self, attachments) -> List[str]:
         """
-        複数添付ファイルの並列処理
-        
-        拡張ポイント：
-        - 処理優先度制御
-        - リアルタイム進捗表示
-        - 処理結果の詳細分析
-        
+        Process multiple attachments in parallel
+
+        Extension points:
+        - Processing priority control
+        - Real-time progress display
+        - Detailed result analysis
+
         Args:
-            attachments: Discord attachment objects のリスト
-        
+            attachments: List of Discord attachment objects
+
         Returns:
-            List[str]: 成功したファイルパスのリスト
+            List[str]: List of successfully saved file paths
         """
         if not attachments:
             return []
-        
+
         logger.info(f"Processing {len(attachments)} attachment(s)")
-        
-        # 並列ダウンロード実行
+
+        # Execute parallel downloads
         tasks = [self.downloader.download_attachment(attachment) for attachment in attachments]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 結果の処理
+
+        # Process results
         successful_paths = []
         failed_count = 0
-        
+
         for result in results:
             if isinstance(result, FileMetadata):
                 successful_paths.append(result.file_path)
@@ -461,51 +461,51 @@ class AttachmentManager:
                 logger.error(f"Attachment processing failed: {result}")
                 failed_count += 1
             else:
-                # None の場合（検証失敗等）
+                # None case (validation failure, etc.)
                 failed_count += 1
-        
-        # 処理結果ログ
+
+        # Log processing results
         logger.info(f"Attachment processing completed: {len(successful_paths)} success, {failed_count} failed")
-        
+
         return successful_paths
-    
+
     def cleanup_old_files(self, max_age_days: int = 1) -> int:
         """
-        古いファイルのクリーンアップ（同期ラッパー）
-        
+        Clean up old files (synchronous wrapper)
+
         Args:
-            max_age_days: 保持期間（日数）
-        
+            max_age_days: Retention period (in days)
+
         Returns:
-            int: 削除されたファイル数
+            int: Number of deleted files
         """
         return self.storage_manager.cleanup_old_files(max_age_days)
-    
+
     def get_storage_info(self) -> Dict[str, Any]:
         """
-        ストレージ情報の取得（同期ラッパー）
-        
+        Get storage information (synchronous wrapper)
+
         Returns:
-            Dict[str, Any]: ストレージ使用状況
+            Dict[str, Any]: Storage usage information
         """
         return self.storage_manager.get_storage_info()
 
-# テスト・デバッグ用関数
+# Test/debug functions
 async def test_attachment_manager():
     """
-    AttachmentManagerの動作テスト
-    
-    拡張ポイント：
-    - ユニットテスト実装
-    - パフォーマンステスト
-    - ストレステスト
+    Test AttachmentManager operation
+
+    Extension points:
+    - Unit test implementation
+    - Performance testing
+    - Stress testing
     """
     manager = AttachmentManager()
-    
+
     print(f"Storage directory: {manager.storage_manager.attachments_dir}")
     print(f"Storage info: {manager.get_storage_info()}")
-    
-    # クリーンアップテスト
+
+    # Cleanup test
     deleted = manager.cleanup_old_files()
     print(f"Cleanup: {deleted} files deleted")
 

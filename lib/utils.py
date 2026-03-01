@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-共通ユーティリティ
-Claude-Discord Bridge全体で使用する共通関数
+Common utilities
+Shared functions used across the Claude-Discord Bridge
 """
 
 import os
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 def find_process_by_name(name: str) -> List[Dict]:
-    """プロセス名で実行中のプロセスを検索"""
+    """Search for running processes by name"""
     processes = []
     try:
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -37,11 +37,11 @@ def find_process_by_name(name: str) -> List[Dict]:
                         'name': name,
                         'cmdline': parts[10:]
                     })
-    
+
     return processes
 
 def is_port_in_use(port: int) -> bool:
-    """指定されたポートが使用中かチェック"""
+    """Check if the specified port is in use"""
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     result = sock.connect_ex(('127.0.0.1', port))
@@ -49,7 +49,7 @@ def is_port_in_use(port: int) -> bool:
     return result == 0
 
 def find_available_port(start_port: int, max_attempts: int = 10) -> Optional[int]:
-    """利用可能なポートを探す"""
+    """Find an available port"""
     for i in range(max_attempts):
         port = start_port + i
         if not is_port_in_use(port):
@@ -57,33 +57,33 @@ def find_available_port(start_port: int, max_attempts: int = 10) -> Optional[int
     return None
 
 def get_toolkit_root() -> Path:
-    """ツールキットのルートディレクトリを取得"""
+    """Get the toolkit root directory"""
     return Path(__file__).parent.parent
 
 def ensure_executable(file_path: Path):
-    """ファイルに実行権限を付与"""
+    """Grant execute permission to a file"""
     os.chmod(file_path, 0o755)
 
 def create_pid_file(service_name: str, pid: int) -> Path:
-    """PIDファイルを作成"""
+    """Create a PID file"""
     # Support both old and new config directory names for backward compatibility
     old_config_dir = Path.home() / '.claude-cli-toolkit'
     new_config_dir = Path.home() / '.claude-discord-bridge'
-    
+
     config_dir = new_config_dir if new_config_dir.exists() else old_config_dir
     pid_dir = config_dir / 'run'
     pid_dir.mkdir(parents=True, exist_ok=True)
-    
+
     pid_file = pid_dir / f"{service_name}.pid"
     pid_file.write_text(str(pid))
     return pid_file
 
 def read_pid_file(service_name: str) -> Optional[int]:
-    """PIDファイルを読み込み"""
+    """Read a PID file"""
     # Support both old and new config directory names for backward compatibility
     old_config_dir = Path.home() / '.claude-cli-toolkit'
     new_config_dir = Path.home() / '.claude-discord-bridge'
-    
+
     config_dir = new_config_dir if new_config_dir.exists() else old_config_dir
     pid_file = config_dir / 'run' / f"{service_name}.pid"
     if pid_file.exists():
@@ -94,36 +94,36 @@ def read_pid_file(service_name: str) -> Optional[int]:
     return None
 
 def remove_pid_file(service_name: str):
-    """PIDファイルを削除"""
+    """Remove a PID file"""
     # Support both old and new config directory names for backward compatibility
     old_config_dir = Path.home() / '.claude-cli-toolkit'
     new_config_dir = Path.home() / '.claude-discord-bridge'
-    
+
     config_dir = new_config_dir if new_config_dir.exists() else old_config_dir
     pid_file = config_dir / 'run' / f"{service_name}.pid"
     if pid_file.exists():
         pid_file.unlink()
 
 def is_service_running(service_name: str) -> bool:
-    """サービスが実行中かチェック（プロセス名ベース）"""
+    """Check if a service is running (process name based)"""
     # Map service names to process names
     process_mapping = {
         'discord_bot': 'discord_bot.py',
         'flask_app': 'flask_app.py'
     }
-    
+
     process_name = process_mapping.get(service_name, service_name)
     processes = find_process_by_name(process_name)
-    
+
     # Check if any matching process is running
     return len(processes) > 0
 
 def is_service_running_legacy(service_name: str) -> bool:
-    """サービスが実行中かチェック（PIDファイルベース・レガシー）"""
+    """Check if a service is running (PID file based, legacy)"""
     pid = read_pid_file(service_name)
     if pid is None:
         return False
-    
+
     try:
         # Check if process exists
         os.kill(pid, 0)
@@ -134,11 +134,11 @@ def is_service_running_legacy(service_name: str) -> bool:
         return False
 
 def stop_service(service_name: str) -> bool:
-    """サービスを停止"""
+    """Stop a service"""
     pid = read_pid_file(service_name)
     if pid is None:
         return False
-    
+
     try:
         # Send SIGTERM
         os.kill(pid, 15)
@@ -149,55 +149,55 @@ def stop_service(service_name: str) -> bool:
         return False
 
 def get_shell_rc_file() -> Optional[Path]:
-    """シェルのRCファイルを取得"""
+    """Get the shell RC file"""
     shell = os.environ.get('SHELL', '').split('/')[-1]
     home = Path.home()
-    
+
     rc_files = {
         'zsh': home / '.zshrc',
         'bash': home / '.bashrc',
         'fish': home / '.config' / 'fish' / 'config.fish'
     }
-    
+
     rc_file = rc_files.get(shell)
     if rc_file and rc_file.exists():
         return rc_file
-    
+
     # Try common alternatives
     for shell_name, path in rc_files.items():
         if path.exists():
             return path
-    
+
     return None
 
 def add_to_path(directory: Path) -> bool:
-    """ディレクトリをPATHに追加"""
+    """Add a directory to PATH"""
     rc_file = get_shell_rc_file()
     if rc_file is None:
         return False
-    
+
     export_line = f'\n# Claude-Discord Bridge\nexport PATH="{directory}:$PATH"\n'
-    
+
     # Check if already added
     content = rc_file.read_text()
     if str(directory) in content:
         return True
-    
+
     # Add to RC file
     with open(rc_file, 'a') as f:
         f.write(export_line)
-    
+
     return True
 
 def remove_from_path(directory: Path) -> bool:
-    """ディレクトリをPATHから削除"""
+    """Remove a directory from PATH"""
     rc_file = get_shell_rc_file()
     if rc_file is None:
         return False
-    
+
     content = rc_file.read_text()
     lines = content.split('\n')
-    
+
     # Filter out lines containing the directory
     filtered_lines = []
     skip_next = False
@@ -210,20 +210,20 @@ def remove_from_path(directory: Path) -> bool:
             continue
         if str(directory) not in line:
             filtered_lines.append(line)
-    
+
     # Write back
     rc_file.write_text('\n'.join(filtered_lines))
     return True
 
 def format_session_list(sessions: List[tuple]) -> str:
-    """セッションリストをフォーマット"""
+    """Format a session list for display"""
     if not sessions:
         return "No sessions configured"
-    
+
     lines = []
     for num, channel_id in sessions:
         lines.append(f"  Session {num}: {channel_id}")
-    
+
     return '\n'.join(lines)
 
 if __name__ == "__main__":

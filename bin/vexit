@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-vexit - Claude-Discord Bridgeを停止する
+vexit - Stop the Claude-Discord Bridge
 """
 
 import os
@@ -16,7 +16,7 @@ from src.tmux_manager import TmuxManager
 from lib.utils import stop_service, is_service_running
 
 def main():
-    """メイン関数"""
+    """Main function"""
     print("🛑 Stopping Claude-Discord Bridge...")
     
     # Stop services

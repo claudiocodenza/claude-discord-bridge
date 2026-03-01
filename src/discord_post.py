@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Discord Post実装
-メッセージをDiscordに投稿する
+Discord Post implementation
+Posts messages to Discord
 """
 
 import os

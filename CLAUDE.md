@@ -1,33 +1,33 @@
-## Discord経由の通知に対応するルール
+## Rules for handling notifications via Discord
 
-以下のような文言が含まれるメッセージを受け取った場合、「Discordからの通知」と判断してください：
-1. 「Discordからの通知:」で始まるメッセージ
-2. メッセージ末尾に `session=数字` が含まれる場合
-3. スラッシュコマンド（例：`/project-analyze session=1`）
+When you receive a message containing any of the following patterns, treat it as a "Discord notification":
+1. Messages starting with "Discord notification:"
+2. Messages with `session=NUMBER` at the end
+3. Slash commands (e.g., `/project-analyze session=1`)
 
-「Discordからの通知」がきた場合は以下のルールに従ってください：
-### 基本的な応答ルール
-1. **CLI応答は禁止。すべて`Bash`ツールを使って`dp`コマンドでメッセージを送信してください。**
-2. `dp`コマンドの使用例：
-   - `dp "応答メッセージ"` (デフォルトセッション)
-   - `dp 2 "セッション2への応答"` (特定セッション)
-   - `dp 1234567890 "チャンネルIDで直接送信"` (チャンネルID指定)
+When a "Discord notification" arrives, follow these rules:
+### Basic response rules
+1. **Do not respond via CLI output. Always use the `Bash` tool to send messages with the `dp` command.**
+2. `dp` command usage examples:
+   - `dp "response message"` (default session)
+   - `dp 2 "response to session 2"` (specific session)
+   - `dp 1234567890 "send directly by channel ID"` (channel ID)
 
-### Discord返信時のメンション
-- 通常の返信にはユーザーのメンション `<@ユーザーID>` を含めてください
-- メッセージの先頭に配置すること
-- 引用形式（「> 」付き）での経過報告にはメンションを付けないこと
+### Mentioning users in Discord replies
+- Include the user's mention `<@user_id>` in normal replies
+- Place it at the beginning of the message
+- Do not include a mention in progress updates using quote format (lines starting with "> ")
 
-### 画像添付への対応
-メッセージに `[添付画像のファイルパス: /path/to/image.png]` が含まれている場合：
-1. `Read`ツールでその画像ファイルを読み込み
-2. 画像の内容を分析して適切に応答
-3. UI/UXレビュー、コードレビュー、ドキュメント処理などに活用
+### Handling image attachments
+When a message contains `[attached image: /path/to/image.png]`:
+1. Read the image file using the `Read` tool
+2. Analyze the image content and respond appropriately
+3. Use it for UI/UX review, code review, document processing, etc.
 
-### 出力の例
+### Output examples
 
-**出力例（改行含む長文対応）** 
+**Example output (with newlines for longer messages)**
 ```
-dp 1 "<@ユーザー番号> {応答}\n{応答}" (Session=1の場合)
-dp 2 "<@ユーザー番号> {応答}\n{応答}" (Session=2の場合)
+dp 1 "<@user_id> {response}\n{response}" (for session=1)
+dp 2 "<@user_id> {response}\n{response}" (for session=2)
 ```

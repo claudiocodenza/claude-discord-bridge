@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# dp - Discord Postコマンド
-# 使い方:
-#   dp "message"                    # デフォルトセッション
-#   dp 2 "message"                  # セッション2
-#   dp 1234567890123456 "message"   # チャンネルID直接指定
+# dp - Discord Post command
+# Usage:
+#   dp "message"                    # default session
+#   dp 2 "message"                  # session 2
+#   dp 1234567890123456 "message"   # direct channel ID
 #
 
 # Get toolkit root directory

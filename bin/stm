@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-stm - Setup tmux環境セットアップ
+stm - Setup tmux environment
 """
 
 import os
@@ -14,7 +14,7 @@ sys.path.insert(0, str(toolkit_root))
 from src.tmux_manager import TmuxManager, setup_tmux_environment
 
 def main():
-    """メイン関数"""
+    """Main function"""
     print("🖥️  Setting up tmux environment...")
     
     if setup_tmux_environment():

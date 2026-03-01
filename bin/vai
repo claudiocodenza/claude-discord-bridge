@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-vai - Claude-Discord Bridge起動・管理コマンド
+vai - Claude-Discord Bridge startup and management command
 """
 
 import os
@@ -28,7 +28,7 @@ from lib.utils import (
 )
 
 def cmd_start():
-    """サービスを起動"""
+    """Start services"""
     settings = SettingsManager()
     
     # Check if configured
@@ -118,7 +118,7 @@ def cmd_start():
             print(f"  ... and {len(claude_sessions) - 3} more")
 
 def cmd_status():
-    """サービスの状態を確認"""
+    """Check service status"""
     settings = SettingsManager()
     tmux = TmuxManager()
     attachment_manager = AttachmentManager()
@@ -172,13 +172,13 @@ def cmd_status():
     print(f"  Flask: {flask_port} {'✅ Available' if not is_port_in_use(flask_port) else '❌ In use'}")
 
 def cmd_doctor():
-    """環境診断を実行"""
+    """Run environment diagnostics"""
     detector = EnvironmentDetector()
     is_healthy = detector.print_diagnosis()
     sys.exit(0 if is_healthy else 1)
 
 def cmd_list_sessions():
-    """セッション一覧を表示"""
+    """Display session list"""
     settings = SettingsManager()
     sessions = settings.list_sessions()
     
@@ -195,7 +195,7 @@ def cmd_list_sessions():
         print(f"Session {num}: {channel_id}{default}")
 
 def cmd_add_session(channel_id: str):
-    """新しいセッションを追加"""
+    """Add a new session"""
     settings = SettingsManager()
     
     # Validate channel ID
@@ -219,7 +219,7 @@ def cmd_add_session(channel_id: str):
         print("ℹ️  Restart the bot to use the new session")
 
 def cmd_view():
-    """全セッションを1画面でリアルタイム表示"""
+    """Display all sessions in real-time on one screen"""
     settings = SettingsManager()
     tmux = TmuxManager()
     
@@ -388,7 +388,7 @@ def _create_linked_view(view_session, pane_target, claude_session, session_num):
     ])
 
 def print_usage():
-    """使用方法を表示"""
+    """Display usage information"""
     print("vai - Claude-Discord Bridge Manager")
     print("\nUsage:")
     print("  vai                    Start all services")
@@ -402,7 +402,7 @@ def print_usage():
     print("  dp [session] 'msg'     Send message to Discord")
 
 def main():
-    """メイン関数"""
+    """Main function"""
     if len(sys.argv) == 1:
         # No arguments - start services
         cmd_start()
