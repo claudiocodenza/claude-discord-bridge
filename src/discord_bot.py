@@ -34,6 +34,7 @@ except ImportError:
 
 from config.settings import SettingsManager
 from attachment_manager import AttachmentManager
+from tmux_manager import TmuxManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,18 +70,30 @@ class ClaudeCLIBot(commands.Bot):
 
     CLEANUP_INTERVAL_HOURS = 6
     REQUEST_TIMEOUT_SECONDS = 5
-    LOADING_MESSAGE = "`...`"
-    SUCCESS_MESSAGE = "> Message sent successfully"
+    REACT_PROCESSING = "\U0001F440"  # eyes
+    REACT_SUCCESS = "\u2705"         # green checkmark
+    REACT_ERROR = "\u274C"           # red X
 
     def __init__(self, settings_manager: SettingsManager):
         self.settings = settings_manager
         self.attachment_manager = AttachmentManager()
         self.message_processor = MessageProcessor()
+        self.tmux_manager = TmuxManager()
 
         intents = discord.Intents.default()
         intents.message_content = True
 
         super().__init__(command_prefix='!', intents=intents)
+
+    async def update_presence(self):
+        """Update bot presence to show active session count."""
+        channels = self.settings.list_channel_configs()
+        count = len(channels) if channels else 0
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name=f"{count} session{'s' if count != 1 else ''}",
+        )
+        await self.change_presence(activity=activity)
 
     async def setup_hook(self):
         """Called when bot is starting up — register slash commands."""
@@ -108,12 +121,14 @@ class ClaudeCLIBot(commands.Bot):
         if not self.cleanup_task.is_running():
             self.cleanup_task.start()
 
-        # Print active channels
+        # Print active channels and set bot presence
         channels = self.settings.list_channel_configs()
         if channels:
             print(f'Active channels: {len(channels)}')
             for ch_id, cfg in channels:
                 print(f'  #{cfg["name"]} -> session {cfg["session_num"]} ({cfg["work_dir"]})')
+
+        await self.update_presence()
 
     async def on_message(self, message):
         """Route messages from configured channels to their Claude sessions."""
@@ -131,12 +146,11 @@ class ClaudeCLIBot(commands.Bot):
 
         session_num = cfg['session_num']
 
-        # Send loading indicator
+        # React with processing indicator
         try:
-            loading_msg = await message.channel.send(self.LOADING_MESSAGE)
+            await message.add_reaction(self.REACT_PROCESSING)
         except Exception as e:
-            logger.error(f'Feedback send error: {e}')
-            return
+            logger.error(f'Reaction add error: {e}')
 
         try:
             # Process attachments
@@ -170,22 +184,34 @@ class ClaudeCLIBot(commands.Bot):
                 timeout=self.REQUEST_TIMEOUT_SECONDS,
             )
 
+            # Replace processing reaction with result
+            try:
+                await message.remove_reaction(self.REACT_PROCESSING, self.user)
+            except Exception:
+                pass
+
             if response.status_code == 200:
-                result_text = self.SUCCESS_MESSAGE
+                await message.add_reaction(self.REACT_SUCCESS)
             else:
-                result_text = f"Warning: Status {response.status_code}"
+                await message.add_reaction(self.REACT_ERROR)
+                await message.channel.send(f"Warning: Status {response.status_code}")
 
         except requests.exceptions.ConnectionError:
             logger.error("Failed to connect to Flask app")
-            result_text = "Error: Cannot connect to Flask app"
+            try:
+                await message.remove_reaction(self.REACT_PROCESSING, self.user)
+                await message.add_reaction(self.REACT_ERROR)
+            except Exception:
+                pass
+            await message.channel.send("Error: Cannot connect to Flask app")
         except Exception as e:
             logger.error(f"Message processing error: {e}", exc_info=True)
-            result_text = f"Error: {str(e)[:100]}"
-
-        try:
-            await loading_msg.edit(content=result_text)
-        except Exception as e:
-            logger.error(f'Message update failed: {e}')
+            try:
+                await message.remove_reaction(self.REACT_PROCESSING, self.user)
+                await message.add_reaction(self.REACT_ERROR)
+            except Exception:
+                pass
+            await message.channel.send(f"Error: {str(e)[:100]}")
 
     @tasks.loop(hours=CLEANUP_INTERVAL_HOURS)
     async def cleanup_task(self):
@@ -195,6 +221,18 @@ class ClaudeCLIBot(commands.Bot):
                 logger.info(f'Automatic cleanup: {cleanup_count} files deleted')
         except Exception as e:
             logger.error(f'Error in cleanup task: {e}')
+
+        # Check for stale sessions (config says active but tmux session is gone)
+        try:
+            channels = self.settings.list_channel_configs(active_only=True)
+            for ch_id, cfg in channels:
+                channel_name = cfg.get('name', '')
+                if not channel_name:
+                    continue
+                if not self.tmux_manager.is_claude_session_exists(channel_name):
+                    logger.warning(f'Stale session detected: cb-{channel_name} (tmux gone)')
+        except Exception as e:
+            logger.error(f'Error in session cleanup: {e}')
 
     @cleanup_task.before_loop
     async def before_cleanup_task(self):
@@ -279,6 +317,7 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
             f"Attach: `tmux attach -t cb-{name}`",
             ephemeral=True,
         )
+        await bot.update_presence()
 
     @bot.tree.command(name="archive-channel", description="Archive this channel and kill its Claude session")
     async def archive_channel(interaction: discord.Interaction):
@@ -336,6 +375,7 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
                 f"Killed Claude session {session_num} but could not archive channel (missing permissions).",
                 ephemeral=True,
             )
+        await bot.update_presence()
 
     @bot.tree.command(name="channel-config", description="View or update this channel's Claude config")
     @app_commands.describe(

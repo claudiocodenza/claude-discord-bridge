@@ -94,10 +94,24 @@ class FlaskBridgeApp:
 
     def health_check(self) -> Response:
         channels = self.settings.list_channel_configs()
+        tmux_sessions = self.tmux_manager.list_claude_sessions()
+
+        channel_details = []
+        for ch_id, cfg in channels:
+            name = cfg.get('name', '')
+            tmux_alive = self.tmux_manager.is_claude_session_exists(name) if name else False
+            channel_details.append({
+                'channel_id': ch_id,
+                'name': name,
+                'tmux_alive': tmux_alive,
+            })
+
         return jsonify({
             'status': 'healthy',
             'timestamp': datetime.now().isoformat(),
             'active_channels': len(channels),
+            'tmux_sessions': len(tmux_sessions),
+            'channels': channel_details,
         })
 
     def handle_discord_message(self) -> Response:
