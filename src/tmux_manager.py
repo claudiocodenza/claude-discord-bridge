@@ -132,8 +132,17 @@ class TmuxManager:
         except subprocess.CalledProcessError:
             return []
 
-    def create_claude_session(self, session_num: int, work_dir: str, options: str = "") -> bool:
-        """Create a tmux session for Claude Code"""
+    def create_claude_session(self, session_num: int, work_dir: str, options: str = "",
+                              channel_id: str = "", system_prompt: str = "") -> bool:
+        """Create a tmux session for Claude Code.
+
+        Args:
+            session_num: Numeric session ID for tmux naming
+            work_dir: Working directory for Claude CLI
+            options: Claude CLI options (e.g. --dangerously-skip-permissions)
+            channel_id: Discord channel ID (set as DISCORD_CHANNEL_ID env var for dp)
+            system_prompt: Optional system prompt to pass to Claude CLI
+        """
         session_name = f"{self.claude_session_prefix}-{session_num}"
 
         # Check if session already exists
@@ -142,16 +151,27 @@ class TmuxManager:
             return True
 
         try:
-            # Build Claude command with bridge bin in PATH
+            # Build Claude command with bridge bin in PATH and channel ID
             bridge_bin = str(Path(__file__).parent.parent / 'bin')
-            claude_cmd = f'export PATH="{bridge_bin}:$PATH" && cd "{work_dir}" && claude {options}'.strip()
+            env_exports = f'export PATH="{bridge_bin}:$PATH"'
+            if channel_id:
+                env_exports += f' && export DISCORD_CHANNEL_ID="{channel_id}"'
+
+            # Build claude command with options
+            claude_args = options
+            if system_prompt:
+                # Escape single quotes in system prompt for shell
+                escaped_prompt = system_prompt.replace("'", "'\\''")
+                claude_args += f" --append-system-prompt '{escaped_prompt}'"
+
+            claude_cmd = f'{env_exports} && cd "{work_dir}" && claude {claude_args}'.strip()
 
             # Create new detached session with Claude Code
             subprocess.run(
                 ["tmux", "new-session", "-d", "-s", session_name, claude_cmd],
                 check=True
             )
-            print(f"✅ Created Claude session {session_num}: {session_name}")
+            print(f"Created Claude session {session_num}: {session_name} (channel: {channel_id or 'none'})")
             return True
         except subprocess.CalledProcessError as e:
             print(f"Error creating Claude session {session_num}: {e}")

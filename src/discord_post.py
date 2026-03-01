@@ -67,18 +67,21 @@ def post_to_discord(channel_id: str, message: str):
 def main():
     """Main function for command line usage"""
     settings = SettingsManager()
-    
+
     # Check if stdin has data
     if not sys.stdin.isatty():
         message = sys.stdin.read().strip()
-        
+
         # Check if channel ID is provided as argument
         if len(sys.argv) > 1:
             channel_arg = sys.argv[1]
+        elif os.environ.get('DISCORD_CHANNEL_ID'):
+            # Use channel ID from environment (set by channel-per-session tmux sessions)
+            channel_arg = os.environ['DISCORD_CHANNEL_ID']
         else:
             # Use default session
             channel_arg = str(settings.get_default_session())
-        
+
         # Determine if it's a session number or channel ID
         if channel_arg.isdigit() and len(channel_arg) < 5:
             # It's a session number
@@ -89,7 +92,7 @@ def main():
         else:
             # It's a channel ID
             channel_id = channel_arg
-        
+
         # Post message
         if post_to_discord(channel_id, message):
             # Success - no output

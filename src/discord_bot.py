@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """
-Discord Bot implementation - Core functionality of the Claude-Discord Bridge
+Discord Bot - Claude-Discord Bridge (Channel-per-Session model)
 
-This module is responsible for:
-1. Receiving and processing Discord messages
-2. Managing image attachments
-3. Forwarding messages to Claude Code
-4. Managing user feedback
-5. Periodic maintenance tasks
+Each Discord channel maps to an independent Claude CLI tmux session with
+per-channel configuration (work_dir, claude_options, system_prompt).
 
-Extensibility points:
-- Adding message format strategies
-- Supporting new attachment file types
-- Adding custom commands
-- Extending notification methods
-- Enhancing session management
+Slash commands for channel lifecycle management:
+- /new-channel: Create a new channel with a Claude session
+- /archive-channel: Archive a channel and kill its tmux session
+- /channel-config: View or update config for the current channel
+- /list-channels: List all active Claude channels
 """
 
 import os
@@ -31,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
     import discord
+    from discord import app_commands
     from discord.ext import commands, tasks
 except ImportError:
     print("Error: discord.py is not installed. Run: pip install discord.py")
@@ -39,316 +35,152 @@ except ImportError:
 from config.settings import SettingsManager
 from attachment_manager import AttachmentManager
 
-# Logging configuration (in production, can be loaded from external config file)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class MessageProcessor:
-    """
-    Strategy pattern implementation for message processing
+# Category name for Claude session channels
+CLAUDE_CATEGORY_NAME = "Claude Sessions"
 
-    Future extensions:
-    - Support for different message formats
-    - Content filtering
-    - Message transformation
-    """
+
+class MessageProcessor:
+    """Format messages for forwarding to Claude CLI."""
 
     @staticmethod
-    def format_message_with_attachments(content: str, attachment_paths: List[str], session_num: int) -> str:
-        """
-        Format a message with attachment file paths
-
-        Extension points:
-        - Diversifying attachment file types (video, audio, documents, etc.)
-        - Customizing message templates
-        - Internationalization support
-
-        Args:
-            content: Original message content
-            attachment_paths: List of attachment file paths
-            session_num: Session number
-
-        Returns:
-            str: Formatted message
-        """
-        # Build attachment path string
+    def format_message(content: str, attachment_paths: List[str],
+                       user_id: str = "", channel_name: str = "") -> str:
+        """Format a message with attachments for Claude CLI input."""
         attachment_str = ""
         if attachment_paths:
             attachment_parts = [f"[attached image: {path}]" for path in attachment_paths]
             attachment_str = " " + " ".join(attachment_parts)
 
-        # Branch based on message type
         if content.startswith('/'):
-            # Slash command format (direct Claude Code command execution)
-            return f"{content}{attachment_str} session={session_num}"
+            return f"{content}{attachment_str}"
         else:
-            # Normal message format (notification to Claude Code)
-            return f"Discord notification: {content}{attachment_str} session={session_num}"
+            return f"Discord notification: {content}{attachment_str}"
+
 
 class ClaudeCLIBot(commands.Bot):
-    """
-    Claude CLI integrated Discord Bot
+    """Discord Bot with channel-per-session Claude integration."""
 
-    Architecture features:
-    - High responsiveness via asynchronous processing
-    - Extensibility through modular design
-    - Robust error handling
-    - Automatic resource management
-
-    Extensible elements:
-    - Adding custom commands
-    - Permission management system
-    - User session management
-    - Statistics and analytics
-    - Webhook integration
-    """
-
-    # Configurable constants (to be moved to config file in the future)
     CLEANUP_INTERVAL_HOURS = 6
     REQUEST_TIMEOUT_SECONDS = 5
     LOADING_MESSAGE = "`...`"
     SUCCESS_MESSAGE = "> Message sent successfully"
 
     def __init__(self, settings_manager: SettingsManager):
-        """
-        Initialize the Bot instance
-
-        Args:
-            settings_manager: Settings manager instance
-        """
         self.settings = settings_manager
         self.attachment_manager = AttachmentManager()
         self.message_processor = MessageProcessor()
 
-        # Discord Bot configuration
         intents = discord.Intents.default()
-        intents.message_content = True  # Permission to access message content
+        intents.message_content = True
 
         super().__init__(command_prefix='!', intents=intents)
 
+    async def setup_hook(self):
+        """Called when bot is starting up — register slash commands."""
+        register_slash_commands(self, self.settings)
+        # Sync commands with Discord
+        try:
+            synced = await self.tree.sync()
+            logger.info(f"Synced {len(synced)} slash command(s)")
+        except Exception as e:
+            logger.error(f"Failed to sync slash commands: {e}")
+
     async def on_ready(self):
-        """
-        Initialization when the Bot is ready
-
-        Extension points:
-        - Database connection initialization
-        - External API connection verification
-        - Statistics initialization
-        - Starting periodic task processing
-        """
         logger.info(f'{self.user} has connected to Discord!')
-        print(f'✅ Discord bot is ready as {self.user}')
+        print(f'Discord bot is ready as {self.user}')
 
-        # Initial system cleanup
-        await self._perform_initial_cleanup()
+        # Migrate legacy sessions to channel configs
+        self.settings.migrate_sessions_to_channel_configs()
 
-        # Start periodic maintenance tasks
-        await self._start_maintenance_tasks()
-
-    async def _perform_initial_cleanup(self):
-        """
-        Initial cleanup on Bot startup
-
-        Extension points:
-        - Deleting old session data
-        - Log file rotation
-        - Cache initialization
-        """
+        # Initial cleanup
         cleanup_count = self.attachment_manager.cleanup_old_files()
         if cleanup_count > 0:
-            print(f'🧹 Cleaned up {cleanup_count} old attachment files')
+            print(f'Cleaned up {cleanup_count} old attachment files')
 
-    async def _start_maintenance_tasks(self):
-        """
-        Start periodic maintenance tasks
-
-        Extension points:
-        - Database maintenance
-        - Statistics aggregation
-        - External API health checks
-        """
+        # Start periodic maintenance
         if not self.cleanup_task.is_running():
             self.cleanup_task.start()
-            print(f'⏰ Attachment cleanup task started (runs every {self.CLEANUP_INTERVAL_HOURS} hours)')
+
+        # Print active channels
+        channels = self.settings.list_channel_configs()
+        if channels:
+            print(f'Active channels: {len(channels)}')
+            for ch_id, cfg in channels:
+                print(f'  #{cfg["name"]} -> session {cfg["session_num"]} ({cfg["work_dir"]})')
 
     async def on_message(self, message):
-        """
-        Main handler for incoming messages
-
-        Processing flow:
-        1. Pre-validate the message
-        2. Verify the session
-        3. Provide immediate user feedback
-        4. Process attachments
-        5. Format the message
-        6. Forward to Claude Code
-        7. Provide result feedback
-
-        Extension points:
-        - Message preprocessing filters
-        - Permission checks
-        - Rate limiting
-        - Logging
-        - Statistics collection
-        """
-        # Basic validation
-        if not await self._validate_message(message):
-            return
-
-        # Session verification
-        session_num = self.settings.channel_to_session(str(message.channel.id))
-        if session_num is None:
-            return
-
-        # User feedback (immediate loading indicator)
-        loading_msg = await self._send_loading_feedback(message.channel)
-        if not loading_msg:
-            return
-
-        try:
-            # Message processing pipeline
-            result_text = await self._process_message_pipeline(message, session_num)
-
-        except Exception as e:
-            result_text = f"❌ Processing error: {str(e)[:100]}"
-            logger.error(f"Message processing error: {e}", exc_info=True)
-
-        # Display final result
-        await self._update_feedback(loading_msg, result_text)
-
-    async def _validate_message(self, message) -> bool:
-        """
-        Basic message validation
-
-        Extension points:
-        - Spam detection
-        - Permission verification
-        - Blacklist checking
-        """
-        # Ignore messages from the Bot itself
+        """Route messages from configured channels to their Claude sessions."""
         if message.author == self.user:
-            return False
+            return
 
-        # Process standard Discord commands
+        # Process prefix commands (e.g., !status)
         await self.process_commands(message)
 
-        return True
+        # Check if this channel has a config
+        channel_id = str(message.channel.id)
+        cfg = self.settings.get_channel_config(channel_id)
+        if cfg is None or not cfg.get('active', True):
+            return
 
-    async def _send_loading_feedback(self, channel) -> Optional[discord.Message]:
-        """
-        Send loading feedback
+        session_num = cfg['session_num']
 
-        Extension points:
-        - Custom loading messages
-        - Animated display
-        - Progress bar
-        """
+        # Send loading indicator
         try:
-            return await channel.send(self.LOADING_MESSAGE)
+            loading_msg = await message.channel.send(self.LOADING_MESSAGE)
         except Exception as e:
             logger.error(f'Feedback send error: {e}')
-            return None
+            return
 
-    async def _process_message_pipeline(self, message, session_num: int) -> str:
-        """
-        Message processing pipeline
-
-        Extension points:
-        - Adding processing steps
-        - Parallelizing async operations
-        - Caching
-        """
-        # Step 1: Process attachments
-        attachment_paths = await self._process_attachments(message, session_num)
-
-        # Step 2: Format message
-        formatted_message = self.message_processor.format_message_with_attachments(
-            message.content, attachment_paths, session_num
-        )
-
-        # Step 3: Forward to Claude Code
-        return await self._forward_to_claude(formatted_message, message, session_num)
-
-    async def _process_attachments(self, message, session_num: int) -> List[str]:
-        """
-        Process attachments
-
-        Extension points:
-        - Supporting new file formats
-        - File conversion
-        - Virus scanning
-        """
-        attachment_paths = []
-        if message.attachments:
-            try:
-                attachment_paths = await self.attachment_manager.process_attachments(message.attachments)
-                if attachment_paths:
-                    print(f'📎 Processed {len(attachment_paths)} attachment(s) for session {session_num}')
-            except Exception as e:
-                logger.error(f'Attachment processing error: {e}')
-
-        return attachment_paths
-
-    async def _forward_to_claude(self, formatted_message: str, original_message, session_num: int) -> str:
-        """
-        Forward a message to Claude Code
-
-        Extension points:
-        - Supporting multiple forwarding targets
-        - Retry on forwarding failure
-        - Load balancing
-        """
         try:
+            # Process attachments
+            attachment_paths = []
+            if message.attachments:
+                try:
+                    attachment_paths = await self.attachment_manager.process_attachments(message.attachments)
+                except Exception as e:
+                    logger.error(f'Attachment processing error: {e}')
+
+            # Format message
+            formatted = self.message_processor.format_message(
+                message.content, attachment_paths,
+                user_id=str(message.author.id),
+                channel_name=cfg.get('name', ''),
+            )
+
+            # Forward to Flask bridge
             payload = {
-                'message': formatted_message,
-                'channel_id': str(original_message.channel.id),
+                'message': formatted,
+                'channel_id': channel_id,
                 'session': session_num,
-                'user_id': str(original_message.author.id),
-                'username': str(original_message.author)
+                'user_id': str(message.author.id),
+                'username': str(message.author),
             }
 
             flask_port = self.settings.get_port('flask')
             response = requests.post(
                 f'http://localhost:{flask_port}/discord-message',
                 json=payload,
-                timeout=self.REQUEST_TIMEOUT_SECONDS
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
             )
 
-            return self._format_response_status(response.status_code)
+            if response.status_code == 200:
+                result_text = self.SUCCESS_MESSAGE
+            else:
+                result_text = f"Warning: Status {response.status_code}"
 
         except requests.exceptions.ConnectionError:
-            logger.error("Failed to connect to Flask app. Is it running?")
-            return "❌ Error: Cannot connect to Flask app"
+            logger.error("Failed to connect to Flask app")
+            result_text = "Error: Cannot connect to Flask app"
         except Exception as e:
-            logger.error(f"Error forwarding message: {e}")
-            return f"❌ Error: {str(e)[:100]}"
+            logger.error(f"Message processing error: {e}", exc_info=True)
+            result_text = f"Error: {str(e)[:100]}"
 
-    def _format_response_status(self, status_code: int) -> str:
-        """
-        Format the response status
-
-        Extension points:
-        - Detailed status messages
-        - Internationalization support
-        - Custom messages
-        """
-        if status_code == 200:
-            return self.SUCCESS_MESSAGE
-        else:
-            return f"⚠️ Status: {status_code}"
-
-    async def _update_feedback(self, loading_msg: discord.Message, result_text: str):
-        """
-        Update the feedback message
-
-        Extension points:
-        - Rich message display
-        - Progress status display
-        - Interactive elements
-        """
         try:
             await loading_msg.edit(content=result_text)
         except Exception as e:
@@ -356,15 +188,6 @@ class ClaudeCLIBot(commands.Bot):
 
     @tasks.loop(hours=CLEANUP_INTERVAL_HOURS)
     async def cleanup_task(self):
-        """
-        Periodic cleanup task
-
-        Extension points:
-        - Database cleanup
-        - Log file management
-        - Statistics aggregation
-        - System health checks
-        """
         try:
             cleanup_count = self.attachment_manager.cleanup_old_files()
             if cleanup_count > 0:
@@ -374,82 +197,250 @@ class ClaudeCLIBot(commands.Bot):
 
     @cleanup_task.before_loop
     async def before_cleanup_task(self):
-        """Preparation before starting the cleanup task"""
         await self.wait_until_ready()
 
-def create_bot_commands(bot: ClaudeCLIBot, settings: SettingsManager):
-    """
-    Register Bot commands
 
-    Extension points:
-    - Adding new commands
-    - Permission-based commands
-    - Dynamic command registration
-    """
+def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
+    """Register Discord slash commands for channel lifecycle management."""
 
+    @bot.tree.command(name="new-channel", description="Create a new Claude session channel")
+    @app_commands.describe(
+        name="Channel name (e.g., 'projects', 'knowledge', 'chat')",
+        work_dir="Working directory for Claude CLI",
+        options="Claude CLI options (e.g., '--dangerously-skip-permissions')",
+        system_prompt="Custom system prompt for this channel's Claude session",
+    )
+    async def new_channel(
+        interaction: discord.Interaction,
+        name: str,
+        work_dir: str = "",
+        options: str = "",
+        system_prompt: str = "",
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("This command must be used in a server.", ephemeral=True)
+            return
+
+        # Find or create the Claude Sessions category
+        category = discord.utils.get(guild.categories, name=CLAUDE_CATEGORY_NAME)
+        if category is None:
+            try:
+                category = await guild.create_category(CLAUDE_CATEGORY_NAME)
+            except discord.Forbidden:
+                await interaction.followup.send("Bot lacks permission to create categories.", ephemeral=True)
+                return
+
+        # Create the channel
+        try:
+            channel = await guild.create_text_channel(name, category=category)
+        except discord.Forbidden:
+            await interaction.followup.send("Bot lacks permission to create channels.", ephemeral=True)
+            return
+
+        # Register in channel configs
+        config = settings.add_channel_config(
+            channel_id=str(channel.id),
+            name=name,
+            work_dir=work_dir,
+            claude_options=options,
+            system_prompt=system_prompt,
+        )
+
+        session_num = config['session_num']
+
+        # Start the tmux session via Flask API
+        try:
+            flask_port = settings.get_port('flask')
+            resp = requests.post(
+                f'http://localhost:{flask_port}/channels/start',
+                json={
+                    'channel_id': str(channel.id),
+                    'session_num': session_num,
+                    'work_dir': config['work_dir'],
+                    'claude_options': config['claude_options'],
+                    'system_prompt': config.get('system_prompt', ''),
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to start tmux session: {resp.text}")
+        except Exception as e:
+            logger.warning(f"Could not start tmux session via API: {e}")
+
+        await interaction.followup.send(
+            f"Created channel <#{channel.id}> with Claude session {session_num}\n"
+            f"Work dir: `{config['work_dir']}`\n"
+            f"Options: `{config['claude_options'] or '(default)'}`",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(name="archive-channel", description="Archive this channel and kill its Claude session")
+    async def archive_channel(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        channel_id = str(interaction.channel.id)
+        cfg = settings.get_channel_config(channel_id)
+
+        if cfg is None:
+            await interaction.followup.send("This channel is not a Claude session channel.", ephemeral=True)
+            return
+
+        session_num = cfg['session_num']
+
+        # Kill tmux session via Flask API
+        try:
+            flask_port = settings.get_port('flask')
+            requests.post(
+                f'http://localhost:{flask_port}/channels/stop',
+                json={'channel_id': channel_id, 'session_num': session_num},
+                timeout=10,
+            )
+        except Exception as e:
+            logger.warning(f"Could not stop tmux session: {e}")
+
+        # Mark as inactive
+        settings.remove_channel_config(channel_id)
+
+        # Archive the Discord channel
+        try:
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(
+                    send_messages=False, read_messages=False
+                )
+            }
+            await interaction.channel.edit(
+                name=f"archived-{cfg['name']}",
+                overwrites=overwrites,
+            )
+            await interaction.followup.send(
+                f"Archived channel and killed Claude session {session_num}.",
+                ephemeral=True,
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"Killed Claude session {session_num} but could not archive channel (missing permissions).",
+                ephemeral=True,
+            )
+
+    @bot.tree.command(name="channel-config", description="View or update this channel's Claude config")
+    @app_commands.describe(
+        work_dir="New working directory (leave empty to keep current)",
+        options="New Claude CLI options (leave empty to keep current)",
+        system_prompt="New system prompt (leave empty to keep current)",
+    )
+    async def channel_config(
+        interaction: discord.Interaction,
+        work_dir: str = "",
+        options: str = "",
+        system_prompt: str = "",
+    ):
+        channel_id = str(interaction.channel.id)
+        cfg = settings.get_channel_config(channel_id)
+
+        if cfg is None:
+            await interaction.response.send_message(
+                "This channel is not a Claude session channel.", ephemeral=True
+            )
+            return
+
+        # If no args provided, just show current config
+        if not work_dir and not options and not system_prompt:
+            prompt_preview = cfg.get('system_prompt', '')[:200]
+            if len(cfg.get('system_prompt', '')) > 200:
+                prompt_preview += '...'
+
+            await interaction.response.send_message(
+                f"**Channel config for #{cfg['name']}**\n"
+                f"Session: {cfg['session_num']}\n"
+                f"Work dir: `{cfg['work_dir']}`\n"
+                f"Options: `{cfg['claude_options'] or '(default)'}`\n"
+                f"System prompt: `{prompt_preview or '(none)'}`\n"
+                f"Active: {cfg.get('active', True)}",
+                ephemeral=True,
+            )
+            return
+
+        # Update config
+        updates = {}
+        if work_dir:
+            updates['work_dir'] = work_dir
+        if options:
+            updates['claude_options'] = options
+        if system_prompt:
+            updates['system_prompt'] = system_prompt
+
+        settings.update_channel_config(channel_id, **updates)
+
+        await interaction.response.send_message(
+            f"Updated config. Restart the session (`/archive-channel` then `/new-channel`) "
+            f"for changes to take effect.",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(name="list-channels", description="List all active Claude session channels")
+    async def list_channels(interaction: discord.Interaction):
+        channels = settings.list_channel_configs(active_only=True)
+
+        if not channels:
+            await interaction.response.send_message("No active Claude channels.", ephemeral=True)
+            return
+
+        lines = ["**Active Claude Channels:**"]
+        for ch_id, cfg in channels:
+            lines.append(
+                f"<#{ch_id}> (session {cfg['session_num']}) - "
+                f"`{cfg['work_dir']}` - "
+                f"`{cfg['claude_options'] or '(default)'}`"
+            )
+
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    # Keep legacy prefix commands for backward compat
     @bot.command(name='status')
     async def status_command(ctx):
         """Bot status check command"""
-        sessions = settings.list_sessions()
+        channels = settings.list_channel_configs()
         embed = discord.Embed(
             title="Claude CLI Bot Status",
-            description="✅ Bot is running",
+            description="Bot is running",
             color=discord.Color.green()
         )
 
-        session_list = "\n".join([f"Session {num}: <#{ch_id}>" for num, ch_id in sessions])
-        embed.add_field(name="Active Sessions", value=session_list or "No sessions configured", inline=False)
+        if channels:
+            channel_list = "\n".join(
+                [f"<#{ch_id}> (session {cfg['session_num']}, `{cfg['name']}`)" for ch_id, cfg in channels]
+            )
+        else:
+            channel_list = "No channels configured"
 
+        embed.add_field(name="Active Channels", value=channel_list, inline=False)
         await ctx.send(embed=embed)
 
-    @bot.command(name='sessions')
-    async def sessions_command(ctx):
-        """List configured sessions command"""
-        sessions = settings.list_sessions()
-        if not sessions:
-            await ctx.send("No sessions configured.")
-            return
-
-        lines = ["**Configured Sessions:**"]
-        for num, channel_id in sessions:
-            lines.append(f"Session {num}: <#{channel_id}>")
-
-        await ctx.send("\n".join(lines))
 
 def run_bot():
-    """
-    Main execution function for the Discord Bot
-
-    Extension points:
-    - Multi-bot management
-    - Sharding support
-    - High availability configuration
-    """
+    """Main execution function for the Discord Bot."""
     settings = SettingsManager()
 
-    # Token verification
     token = settings.get_token()
     if not token or token == 'your_token_here':
-        print("❌ Discord bot token not configured!")
-        print("Run './install.sh' to set up the token.")
+        print("Discord bot token not configured!")
         sys.exit(1)
 
-    # Create Bot instance
     bot = ClaudeCLIBot(settings)
 
-    # Register commands
-    create_bot_commands(bot, settings)
-
-    # Run Bot
     try:
         bot.run(token)
     except discord.LoginFailure:
-        print("❌ Failed to login. Check your Discord bot token.")
+        print("Failed to login. Check your Discord bot token.")
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error running bot: {e}")
+        print(f"Error running bot: {e}")
         logger.error(f"Bot execution error: {e}", exc_info=True)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     run_bot()

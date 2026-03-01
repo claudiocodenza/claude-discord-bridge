@@ -30,146 +30,158 @@ from lib.utils import (
 def cmd_start():
     """Start services"""
     settings = SettingsManager()
-    
+
     # Check if configured
     if not settings.is_configured():
-        print("❌ Claude-Discord Bridge is not configured.")
+        print("Claude-Discord Bridge is not configured.")
         print("Please run './install.sh' first.")
         sys.exit(1)
-    
+
     # Check if already running
     if is_service_running('discord_bot') or is_service_running('flask_app'):
-        print("⚠️  Services are already running.")
+        print("Services are already running.")
         print("Use 'vai status' to check status or 'vexit' to stop.")
         return
-    
-    print("🚀 Starting Claude-Discord Bridge...")
-    
+
+    print("Starting Claude-Discord Bridge...")
+
     # Start tmux session for monitoring
     tmux = TmuxManager()
     if not tmux.create_session():
-        print("❌ Failed to create tmux session")
+        print("Failed to create tmux session")
         sys.exit(1)
-    
+
     tmux.create_panes()
-    
-    # Start Claude Code sessions
-    work_dir = settings.get_claude_work_dir()
-    claude_options = settings.get_claude_options()
-    sessions = settings.list_sessions()
-    
-    print("  Starting Claude Code sessions...")
-    for session_num, channel_id in sessions:
-        if tmux.create_claude_session(session_num, work_dir, claude_options):
-            time.sleep(1)  # Give each session time to start
-        else:
-            print(f"  ⚠️  Failed to start Claude session {session_num}")
-    
-    print(f"  Started {len(sessions)} Claude Code sessions")
-    
+
+    # Migrate legacy sessions if needed
+    settings.migrate_sessions_to_channel_configs()
+
+    # Start Claude Code sessions from channel configs
+    channels = settings.list_channel_configs(active_only=True)
+    if channels:
+        print(f"  Starting {len(channels)} Claude Code channel session(s)...")
+        for channel_id, cfg in channels:
+            session_num = cfg['session_num']
+            work_dir = cfg['work_dir']
+            claude_options = cfg['claude_options']
+            system_prompt = cfg.get('system_prompt', '')
+
+            if tmux.create_claude_session(
+                session_num, work_dir, claude_options,
+                channel_id=channel_id, system_prompt=system_prompt
+            ):
+                time.sleep(1)
+            else:
+                print(f"  Failed to start session {session_num} for #{cfg['name']}")
+    else:
+        # Fallback to legacy sessions
+        work_dir = settings.get_claude_work_dir()
+        claude_options = settings.get_claude_options()
+        sessions = settings.list_sessions()
+        print(f"  Starting {len(sessions)} Claude Code session(s) (legacy)...")
+        for session_num, channel_id in sessions:
+            if tmux.create_claude_session(session_num, work_dir, claude_options, channel_id=channel_id):
+                time.sleep(1)
+
     # Get paths
     src_dir = toolkit_root / 'src'
-    
+
     # Start Discord bot in pane 0
     print("  Starting Discord bot...")
     tmux.send_command("0.0", f"cd {src_dir} && {venv_python} discord_bot.py")
-    time.sleep(2)  # Give bot time to start
+    time.sleep(2)
 
     # Start Flask app in pane 1
     flask_port = settings.get_port('flask')
     if is_port_in_use(flask_port):
-        print(f"  ⚠️  Port {flask_port} is in use, finding alternative...")
+        print(f"  Port {flask_port} is in use, finding alternative...")
         flask_port = find_available_port(flask_port + 1)
         if flask_port is None:
-            print("  ❌ No available ports found")
+            print("  No available ports found")
             sys.exit(1)
         print(f"  Using port {flask_port}")
 
     print("  Starting Flask app...")
     tmux.send_command("0.1", f"cd {src_dir} && {venv_python} flask_app.py")
-    
+
     # Third pane for monitoring
     tmux.send_command("0.2", "echo 'Claude-Discord Bridge - Monitoring'")
-    
-    print("\n✅ All services started successfully!")
-    
-    # Show Claude sessions
-    claude_sessions = tmux.list_claude_sessions()
-    if claude_sessions:
-        print(f"\n🤖 Claude Code Sessions:")
-        for num, session_name in claude_sessions:
-            default = " ⭐ (default)" if num == settings.get_default_session() else ""
-            print(f"  Session {num}: {session_name}{default}")
-    
+
+    print("\nAll services started successfully!")
+
+    # Show channel sessions
+    channels = settings.list_channel_configs()
+    if channels:
+        print(f"\nClaude Code Channel Sessions:")
+        for ch_id, cfg in channels:
+            print(f"  #{cfg['name']} (session {cfg['session_num']}) -> {cfg['work_dir']}")
+    else:
+        claude_sessions = tmux.list_claude_sessions()
+        if claude_sessions:
+            print(f"\nClaude Code Sessions:")
+            for num, session_name in claude_sessions:
+                print(f"  Session {num}: {session_name}")
+
     print("\nUsage:")
     print("  vai status    - Check service status")
     print("  vai doctor    - Run environment diagnosis")
     print("  vai view      - View all sessions in one screen")
     print("  vexit         - Stop all services")
     print("  dp 'message'  - Send message to Discord")
-    
-    # Offer to attach to tmux
+
     print(f"\nTo view services: tmux attach -t {tmux.session_name}")
-    if claude_sessions:
-        print("To view Claude sessions:")
-        for num, session_name in claude_sessions[:3]:  # Show first 3
-            print(f"  tmux attach -t {session_name}")
-        if len(claude_sessions) > 3:
-            print(f"  ... and {len(claude_sessions) - 3} more")
 
 def cmd_status():
     """Check service status"""
     settings = SettingsManager()
     tmux = TmuxManager()
     attachment_manager = AttachmentManager()
-    
-    print("📊 Claude-Discord Bridge Status")
+
+    print("Claude-Discord Bridge Status")
     print("=" * 40)
-    
+
     # Configuration
-    print("\n⚙️  Configuration:")
-    print(f"  Configured: {'✅ Yes' if settings.is_configured() else '❌ No'}")
-    
+    print("\nConfiguration:")
+    print(f"  Configured: {'Yes' if settings.is_configured() else 'No'}")
+
     # Services
-    print("\n🔧 Services:")
-    print(f"  Discord Bot: {'✅ Running' if is_service_running('discord_bot') else '❌ Stopped'}")
-    print(f"  Flask App: {'✅ Running' if is_service_running('flask_app') else '❌ Stopped'}")
-    print(f"  tmux Session: {'✅ Active' if tmux.is_session_exists() else '❌ Inactive'}")
-    
-    # Discord Sessions
-    print("\n💬 Discord Sessions:")
-    sessions = settings.list_sessions()
-    if sessions:
-        for num, channel_id in sessions:
-            default = " (default)" if num == settings.get_default_session() else ""
-            print(f"  Session {num}: {channel_id}{default}")
+    print("\nServices:")
+    print(f"  Discord Bot: {'Running' if is_service_running('discord_bot') else 'Stopped'}")
+    print(f"  Flask App: {'Running' if is_service_running('flask_app') else 'Stopped'}")
+    print(f"  tmux Session: {'Active' if tmux.is_session_exists() else 'Inactive'}")
+
+    # Channel configs
+    channels = settings.list_channel_configs()
+    print("\nChannel Sessions:")
+    if channels:
+        for ch_id, cfg in channels:
+            session_num = cfg['session_num']
+            running = "Running" if tmux.is_claude_session_exists(session_num) else "Stopped"
+            print(f"  #{cfg['name']} (session {session_num}): {running} -> {cfg['work_dir']}")
     else:
-        print("  No sessions configured")
-    
-    # Claude Sessions
-    print("\n🤖 Claude Code Sessions:")
-    claude_sessions = tmux.list_claude_sessions()
-    if claude_sessions:
-        for num, session_name in claude_sessions:
-            running = "✅ Running" if tmux.is_claude_session_exists(num) else "❌ Stopped"
-            print(f"  Session {num}: {running}")
-    else:
-        print("  No Claude sessions found")
-    
+        # Fallback to legacy
+        sessions = settings.list_sessions()
+        if sessions:
+            for num, channel_id in sessions:
+                running = "Running" if tmux.is_claude_session_exists(num) else "Stopped"
+                print(f"  Session {num}: {running} ({channel_id})")
+        else:
+            print("  No channels configured")
+
     # Attachment Storage
-    print("\n📎 Attachment Storage:")
+    print("\nAttachment Storage:")
     storage_info = attachment_manager.get_storage_info()
     if 'error' in storage_info:
-        print(f"  ❌ Error: {storage_info['error']}")
+        print(f"  Error: {storage_info['error']}")
     else:
         print(f"  Files: {storage_info['total_files']}")
         print(f"  Size: {storage_info['total_size_mb']} MB")
         print(f"  Directory: {storage_info['directory']}")
-    
+
     # Ports
     flask_port = settings.get_port('flask')
-    print(f"\n🔌 Ports:")
-    print(f"  Flask: {flask_port} {'✅ Available' if not is_port_in_use(flask_port) else '❌ In use'}")
+    print(f"\nPorts:")
+    print(f"  Flask: {flask_port} ({'In use' if is_port_in_use(flask_port) else 'Available'})")
 
 def cmd_doctor():
     """Run environment diagnostics"""
