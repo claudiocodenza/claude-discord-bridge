@@ -230,7 +230,7 @@ class SettingsManager:
         if channel_id not in configs:
             return None
         for key, value in kwargs.items():
-            if key in ('name', 'work_dir', 'claude_options', 'system_prompt', 'active'):
+            if key in ('name', 'work_dir', 'claude_options', 'system_prompt', 'active', 'claude_session_id'):
                 configs[channel_id][key] = value
         self.save_channel_configs(configs)
         return configs[channel_id]

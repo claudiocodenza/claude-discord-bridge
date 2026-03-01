@@ -399,7 +399,7 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
                 json={'channel_name': channel_name, 'session_num': session_num},
                 timeout=10,
             )
-            # Start new session with updated config
+            # Start new session with updated config, resuming previous conversation
             requests.post(
                 f'http://localhost:{flask_port}/channels/start',
                 json={
@@ -409,6 +409,8 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
                     'work_dir': updated_cfg['work_dir'],
                     'claude_options': updated_cfg['claude_options'],
                     'system_prompt': updated_cfg.get('system_prompt', ''),
+                    'resume': True,
+                    'claude_session_id': updated_cfg.get('claude_session_id', ''),
                 },
                 timeout=10,
             )

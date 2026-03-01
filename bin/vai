@@ -67,11 +67,18 @@ def cmd_start():
             system_prompt = cfg.get('system_prompt', '')
 
             channel_name = cfg.get('name', '')
-            if tmux.create_claude_session(
+            claude_session_id = cfg.get('claude_session_id', '')
+            result = tmux.create_claude_session(
                 session_num, work_dir, claude_options,
                 channel_id=channel_id, system_prompt=system_prompt,
-                channel_name=channel_name
-            ):
+                channel_name=channel_name, resume=bool(claude_session_id),
+                claude_session_id=claude_session_id,
+            )
+            if result['success']:
+                # Persist claude_session_id if newly generated
+                new_id = result.get('claude_session_id', '')
+                if new_id and new_id != claude_session_id:
+                    settings.update_channel_config(channel_id, claude_session_id=new_id)
                 time.sleep(1)
             else:
                 print(f"  Failed to start session {session_num} for #{cfg['name']}")

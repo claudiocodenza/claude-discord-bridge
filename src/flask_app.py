@@ -170,17 +170,30 @@ class FlaskBridgeApp:
             if not channel_id or session_num is None:
                 return jsonify({'error': 'Missing channel_id or session_num'}), 400
 
-            success = self.tmux_manager.create_claude_session(
+            resume = data.get('resume', False)
+            claude_session_id = data.get('claude_session_id', '')
+
+            result = self.tmux_manager.create_claude_session(
                 session_num=session_num,
                 work_dir=work_dir,
                 options=claude_options,
                 channel_id=channel_id,
                 system_prompt=system_prompt,
                 channel_name=channel_name,
+                resume=resume,
+                claude_session_id=claude_session_id,
             )
 
-            if success:
-                return jsonify({'status': 'started', 'session_num': session_num})
+            if result['success']:
+                # Persist the claude_session_id back to channel config
+                new_id = result.get('claude_session_id', '')
+                if new_id and channel_id:
+                    self.settings.update_channel_config(channel_id, claude_session_id=new_id)
+                return jsonify({
+                    'status': 'started',
+                    'session_num': session_num,
+                    'claude_session_id': new_id,
+                })
             else:
                 return jsonify({'error': 'Failed to create tmux session'}), 500
 

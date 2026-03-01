@@ -7,6 +7,7 @@ Manages tmux sessions
 import os
 import sys
 import subprocess
+import uuid
 from pathlib import Path
 
 class TmuxManager:
@@ -144,7 +145,8 @@ class TmuxManager:
 
     def create_claude_session(self, session_num: int, work_dir: str, options: str = "",
                               channel_id: str = "", system_prompt: str = "",
-                              channel_name: str = "") -> bool:
+                              channel_name: str = "", resume: bool = False,
+                              claude_session_id: str = "") -> dict:
         """Create a tmux session for Claude Code.
 
         Args:
@@ -154,6 +156,11 @@ class TmuxManager:
             channel_id: Discord channel ID (set as DISCORD_CHANNEL_ID env var for dp)
             system_prompt: Optional system prompt to pass to Claude CLI
             channel_name: Human-readable name for the tmux session (e.g. 'projects')
+            resume: If True, resume the conversation identified by claude_session_id
+            claude_session_id: UUID of the Claude conversation to resume or pin
+
+        Returns:
+            dict with 'success' (bool) and 'claude_session_id' (str, the UUID used)
         """
         if channel_name:
             session_name = self._make_session_name(channel_name)
@@ -163,7 +170,11 @@ class TmuxManager:
         # Check if session already exists
         if self._has_session(session_name):
             print(f"Claude session already exists: {session_name}")
-            return True
+            return {'success': True, 'claude_session_id': claude_session_id}
+
+        # Generate a new session ID if none provided
+        if not claude_session_id:
+            claude_session_id = str(uuid.uuid4())
 
         try:
             # Build Claude command with bridge bin in PATH and channel ID
@@ -174,6 +185,12 @@ class TmuxManager:
 
             # Build claude command with options
             claude_args = options
+            if resume and claude_session_id:
+                # Resume a specific conversation by its session ID
+                claude_args += f' --resume {claude_session_id}'
+            else:
+                # New conversation — pin it to this session ID
+                claude_args += f' --session-id {claude_session_id}'
             if system_prompt:
                 # Escape single quotes in system prompt for shell
                 escaped_prompt = system_prompt.replace("'", "'\\''")
@@ -186,11 +203,11 @@ class TmuxManager:
                 ["tmux", "new-session", "-d", "-s", session_name, claude_cmd],
                 check=True
             )
-            print(f"Created Claude session: {session_name} (channel: {channel_id or 'none'})")
-            return True
+            print(f"Created Claude session: {session_name} (channel: {channel_id or 'none'}, claude_id: {claude_session_id[:8]}...)")
+            return {'success': True, 'claude_session_id': claude_session_id}
         except subprocess.CalledProcessError as e:
             print(f"Error creating Claude session {session_name}: {e}")
-            return False
+            return {'success': False, 'claude_session_id': claude_session_id}
 
     def _has_session(self, session_name: str) -> bool:
         """Check if a tmux session exists by exact name."""
