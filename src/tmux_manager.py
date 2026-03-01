@@ -210,10 +210,12 @@ class TmuxManager:
                     f'(claude {resume_args}{prompt_suffix} || claude {fresh_args}{prompt_suffix})'
                 ).strip()
 
-            # Wrap in a login shell so ~/.zshrc (or equivalent) is sourced,
+            # Wrap in an interactive login shell so ~/.zshrc is sourced,
             # ensuring env vars like LINEAR_API_TOKEN are available.
+            # Note: -i is required because .zshrc is only read for interactive shells;
+            # -l alone with -c skips it.
             shell = os.environ.get('SHELL', '/bin/zsh')
-            wrapped_cmd = f'{shell} -l -c {shlex.quote(claude_cmd)}'
+            wrapped_cmd = f'{shell} -l -i -c {shlex.quote(claude_cmd)}'
 
             # Create new detached session with Claude Code
             subprocess.run(
