@@ -142,8 +142,9 @@ class TmuxManager:
             return True
         
         try:
-            # Build Claude command
-            claude_cmd = f"cd \"{work_dir}\" && claude {options}".strip()
+            # Build Claude command with bridge bin in PATH
+            bridge_bin = str(Path(__file__).parent.parent / 'bin')
+            claude_cmd = f'export PATH="{bridge_bin}:$PATH" && cd "{work_dir}" && claude {options}'.strip()
             
             # Create new detached session with Claude Code
             subprocess.run(

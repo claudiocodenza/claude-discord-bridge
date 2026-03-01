@@ -10,6 +10,12 @@
 # Get toolkit root directory
 TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Use venv python if available
+PYTHON="${TOOLKIT_ROOT}/.venv/bin/python3"
+if [ ! -f "$PYTHON" ]; then
+    PYTHON="python3"
+fi
+
 # Check arguments
 if [ $# -eq 0 ]; then
     echo "Usage: dp [session_number or channel_id] \"message\""
@@ -20,12 +26,12 @@ fi
 if [ $# -eq 1 ]; then
     # Only message provided, use default session
     MESSAGE="$1"
-    echo -e "$MESSAGE" | python3 "$TOOLKIT_ROOT/src/discord_post.py"
+    echo -e "$MESSAGE" | "$PYTHON" "$TOOLKIT_ROOT/src/discord_post.py"
 elif [ $# -eq 2 ]; then
     # Session/channel and message provided
     CHANNEL="$1"
     MESSAGE="$2"
-    echo -e "$MESSAGE" | python3 "$TOOLKIT_ROOT/src/discord_post.py" "$CHANNEL"
+    echo -e "$MESSAGE" | "$PYTHON" "$TOOLKIT_ROOT/src/discord_post.py" "$CHANNEL"
 else
     echo "Error: Too many arguments"
     echo "Usage: dp [session_number or channel_id] \"message\""

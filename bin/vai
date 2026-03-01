@@ -13,6 +13,11 @@ from pathlib import Path
 toolkit_root = Path(__file__).parent.parent
 sys.path.insert(0, str(toolkit_root))
 
+# Detect venv python for subprocess/tmux commands
+venv_python = toolkit_root / '.venv' / 'bin' / 'python3'
+if not venv_python.exists():
+    venv_python = Path(sys.executable)  # fallback to current interpreter
+
 from src.environment import EnvironmentDetector
 from src.tmux_manager import TmuxManager
 from src.attachment_manager import AttachmentManager
@@ -67,9 +72,9 @@ def cmd_start():
     
     # Start Discord bot in pane 0
     print("  Starting Discord bot...")
-    tmux.send_command("0.0", f"cd {src_dir} && python3 discord_bot.py")
+    tmux.send_command("0.0", f"cd {src_dir} && {venv_python} discord_bot.py")
     time.sleep(2)  # Give bot time to start
-    
+
     # Start Flask app in pane 1
     flask_port = settings.get_port('flask')
     if is_port_in_use(flask_port):
@@ -79,9 +84,9 @@ def cmd_start():
             print("  ❌ No available ports found")
             sys.exit(1)
         print(f"  Using port {flask_port}")
-    
+
     print("  Starting Flask app...")
-    tmux.send_command("0.1", f"cd {src_dir} && python3 flask_app.py")
+    tmux.send_command("0.1", f"cd {src_dir} && {venv_python} flask_app.py")
     
     # Third pane for monitoring
     tmux.send_command("0.2", "echo 'Claude-Discord Bridge - Monitoring'")
