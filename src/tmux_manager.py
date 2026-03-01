@@ -5,6 +5,7 @@ Manages tmux sessions
 """
 
 import os
+import shlex
 import sys
 import subprocess
 import uuid
@@ -198,9 +199,14 @@ class TmuxManager:
 
             claude_cmd = f'{env_exports} && cd "{work_dir}" && claude {claude_args}'.strip()
 
+            # Wrap in a login shell so ~/.zshrc (or equivalent) is sourced,
+            # ensuring env vars like LINEAR_API_TOKEN are available.
+            shell = os.environ.get('SHELL', '/bin/zsh')
+            wrapped_cmd = f'{shell} -l -c {shlex.quote(claude_cmd)}'
+
             # Create new detached session with Claude Code
             subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_name, claude_cmd],
+                ["tmux", "new-session", "-d", "-s", session_name, wrapped_cmd],
                 check=True
             )
             print(f"Created Claude session: {session_name} (channel: {channel_id or 'none'}, claude_id: {claude_session_id[:8]}...)")
