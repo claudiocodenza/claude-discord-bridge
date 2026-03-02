@@ -11,18 +11,6 @@ import subprocess
 import uuid
 from pathlib import Path
 
-DISCORD_BRIDGE_PROMPT = """\
-You are running inside a Discord bridge session. Follow these rules:
-1. NEVER respond via CLI output — the user cannot see the terminal.
-2. Use the `dp` command (via Bash tool) to send ALL messages back to Discord.
-   Example: dp "your response"
-3. Break long responses into multiple dp calls (Discord has a 4000 char limit).
-4. Discord uses standard Markdown — code blocks, bold, italic all work.
-5. Escape double quotes inside dp arguments with backslash.
-6. When a message includes [attached image: /path/to/image.png], read the image file with the Read tool.
-7. You still have full tool access (Read, Edit, Write, Bash, Grep, Glob, MCP, etc.)."""
-
-
 class TmuxManager:
     """Class for managing tmux sessions"""
 
@@ -206,13 +194,10 @@ class TmuxManager:
             else:
                 # New conversation — pin it to this session ID
                 claude_args = f'{options} --session-id {claude_session_id}'
-            # Always inject Discord bridge response instructions,
-            # then append any channel-specific system prompt.
-            full_prompt = DISCORD_BRIDGE_PROMPT
+            prompt_suffix = ''
             if system_prompt:
-                full_prompt += "\n\n" + system_prompt
-            escaped_prompt = full_prompt.replace("'", "'\\''")
-            prompt_suffix = f" --append-system-prompt '{escaped_prompt}'"
+                escaped_prompt = system_prompt.replace("'", "'\\''")
+                prompt_suffix = f" --append-system-prompt '{escaped_prompt}'"
 
             if claude_args is not None:
                 # Simple case: single command
