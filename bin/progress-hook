@@ -1,176 +1,76 @@
 #!/usr/bin/env bash
 #
 # progress-hook — Claude Code PostToolUse hook
-# Sends brief progress updates to Discord as Claude works.
-#
-# 1. Extracts any NEW intermediate text from the transcript and posts it
-# 2. Posts a one-line tool use status update
-#
-# Only fires when DISCORD_CHANNEL_ID is set (i.e., inside a bridge session).
-# Tool use updates are rate-limited; intermediate text is always sent.
+# Sends one-line tool use updates to Discord as Claude works.
+# Rate-limited to 1 update per 3 seconds.
 #
 
 set -euo pipefail
 
-# Only run inside bridge sessions
 CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
-if [ -z "$CHANNEL_ID" ]; then
-    exit 0
-fi
+[ -z "$CHANNEL_ID" ] && exit 0
 
-# Get bot token from .env
-ENV_FILE="${HOME}/.claude-discord-bridge/.env"
-if [ ! -f "$ENV_FILE" ]; then
-    exit 0
-fi
-BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
-if [ -z "$BOT_TOKEN" ]; then
-    exit 0
-fi
-
-# Read event JSON from stdin
-INPUT=$(cat)
-
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
-if [ -z "$TOOL_NAME" ]; then
-    exit 0
-fi
-
-# Helper: post a message to Discord
-post_to_discord() {
-    local msg="$1"
-    curl -s -o /dev/null \
-        -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
-        -H "Authorization: Bot ${BOT_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$(jq -n --arg content "$msg" '{content: $content}')"
-}
-
-# --- Step 1: Send any unsent intermediate text ---
-TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON="${TOOLKIT_ROOT}/.venv/bin/python3"
-if [ ! -f "$PYTHON" ]; then
-    PYTHON="python3"
-fi
-
-if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    # Get unsent text blocks (NULL-separated, first line is total count)
-    RESULT=$("$PYTHON" "$TOOLKIT_ROOT/bin/_transcript_text.py" unsent \
-        --transcript "$TRANSCRIPT_PATH" \
-        --channel "$CHANNEL_ID" 2>/dev/null) || true
-
-    if [ -n "$RESULT" ]; then
-        # First line is total count
-        TOTAL_COUNT=$(echo "$RESULT" | head -1)
-        # Rest is NULL-separated text blocks
-        TEXT_DATA=$(echo "$RESULT" | tail -n +2)
-
-        if [ -n "$TEXT_DATA" ]; then
-            # Split on NULL and send each text block
-            while IFS= read -r -d $'\0' text_block; do
-                if [ -n "$text_block" ]; then
-                    # Truncate very long blocks for Discord (split at 3900)
-                    while [ ${#text_block} -gt 0 ]; do
-                        chunk="${text_block:0:3900}"
-                        text_block="${text_block:3900}"
-                        post_to_discord "$chunk"
-                        if [ -n "$text_block" ]; then
-                            sleep 0.3
-                        fi
-                    done
-                fi
-            done <<< "$TEXT_DATA"
-        fi
-
-        # Mark these as sent
-        if [ -n "$TOTAL_COUNT" ] && [ "$TOTAL_COUNT" -gt 0 ] 2>/dev/null; then
-            "$PYTHON" "$TOOLKIT_ROOT/bin/_transcript_text.py" mark-sent \
-                --channel "$CHANNEL_ID" \
-                --count "$TOTAL_COUNT" 2>/dev/null || true
-        fi
-    fi
-fi
-
-# --- Step 2: Send tool use progress update (rate-limited) ---
-
-# Rate limit: max 1 tool update per 3 seconds
-RATE_LIMIT_FILE="/tmp/claude-progress-${CHANNEL_ID}.last"
+# Rate limit: 1 update per 3 seconds
+RATE_FILE="/tmp/claude-progress-${CHANNEL_ID}.last"
 NOW=$(date +%s)
-SEND_TOOL_UPDATE=true
-if [ -f "$RATE_LIMIT_FILE" ]; then
-    LAST=$(cat "$RATE_LIMIT_FILE" 2>/dev/null || echo 0)
-    ELAPSED=$((NOW - LAST))
-    if [ "$ELAPSED" -lt 3 ]; then
-        SEND_TOOL_UPDATE=false
-    fi
+if [ -f "$RATE_FILE" ]; then
+    LAST=$(cat "$RATE_FILE" 2>/dev/null || echo 0)
+    [ $((NOW - LAST)) -lt 3 ] && exit 0
 fi
 
-if [ "$SEND_TOOL_UPDATE" = true ]; then
-    # Format progress message based on tool type
-    case "$TOOL_NAME" in
-        Read)
-            FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-            FILE=$(basename "$FILE" 2>/dev/null || echo "$FILE")
-            MSG="> :mag: Reading \`${FILE}\`"
-            ;;
-        Edit)
-            FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-            FILE=$(basename "$FILE" 2>/dev/null || echo "$FILE")
-            MSG="> :pencil2: Edited \`${FILE}\`"
-            ;;
-        Write)
-            FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-            FILE=$(basename "$FILE" 2>/dev/null || echo "$FILE")
-            MSG="> :page_facing_up: Wrote \`${FILE}\`"
-            ;;
-        Bash)
-            CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
-            # Skip dp commands
-            if echo "$CMD" | grep -qE '^\s*dp\s'; then
-                exit 0
-            fi
-            CMD=$(echo "$CMD" | head -c 80)
-            CMD=$(echo "$CMD" | sed 's/`/\\`/g')
-            MSG="> :desktop: Ran \`${CMD}\`"
-            ;;
-        Grep)
-            PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty' | head -c 60)
-            MSG="> :mag_right: Searched for \`${PATTERN}\`"
-            ;;
-        Glob)
-            PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty')
-            MSG="> :file_folder: Globbing \`${PATTERN}\`"
-            ;;
-        WebFetch)
-            URL=$(echo "$INPUT" | jq -r '.tool_input.url // empty' | head -c 80)
-            MSG="> :globe_with_meridians: Fetched ${URL}"
-            ;;
-        WebSearch)
-            QUERY=$(echo "$INPUT" | jq -r '.tool_input.query // empty' | head -c 80)
-            MSG="> :mag: Searched: \`${QUERY}\`"
-            ;;
-        Agent)
-            DESC=$(echo "$INPUT" | jq -r '.tool_input.description // empty' | head -c 80)
-            MSG="> :robot: Agent: ${DESC}"
-            ;;
-        mcp__linear__*)
-            SHORT="${TOOL_NAME#mcp__linear__}"
-            MSG="> :clipboard: Linear: \`${SHORT}\`"
-            ;;
-        mcp__*)
-            MSG="> :electric_plug: MCP: \`${TOOL_NAME}\`"
-            ;;
-        TaskCreate|TaskUpdate|TaskList|TaskGet)
-            exit 0
-            ;;
-        *)
-            MSG="> :gear: ${TOOL_NAME}"
-            ;;
-    esac
+INPUT=$(cat)
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+[ -z "$TOOL_NAME" ] && exit 0
 
-    post_to_discord "$MSG" &
-    echo "$NOW" > "$RATE_LIMIT_FILE"
-fi
+ENV_FILE="${HOME}/.claude-discord-bridge/.env"
+[ ! -f "$ENV_FILE" ] && exit 0
+BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
+[ -z "$BOT_TOKEN" ] && exit 0
 
-exit 0
+# Format message by tool type
+case "$TOOL_NAME" in
+    Read)
+        F=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+        MSG="> :mag: Reading \`$(basename "$F")\`" ;;
+    Edit)
+        F=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+        MSG="> :pencil2: Edited \`$(basename "$F")\`" ;;
+    Write)
+        F=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+        MSG="> :page_facing_up: Wrote \`$(basename "$F")\`" ;;
+    Bash)
+        CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+        echo "$CMD" | grep -qE '^\s*dp\s' && exit 0
+        CMD=$(echo "$CMD" | head -c 80 | sed 's/`/\\`/g')
+        MSG="> :desktop: Ran \`${CMD}\`" ;;
+    Grep)
+        P=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty' | head -c 60)
+        MSG="> :mag_right: Searched for \`${P}\`" ;;
+    Glob)
+        P=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty')
+        MSG="> :file_folder: Globbing \`${P}\`" ;;
+    WebFetch)
+        U=$(echo "$INPUT" | jq -r '.tool_input.url // empty' | head -c 80)
+        MSG="> :globe_with_meridians: Fetched ${U}" ;;
+    WebSearch)
+        Q=$(echo "$INPUT" | jq -r '.tool_input.query // empty' | head -c 80)
+        MSG="> :mag: Searched: \`${Q}\`" ;;
+    Agent)
+        D=$(echo "$INPUT" | jq -r '.tool_input.description // empty' | head -c 80)
+        MSG="> :robot: Agent: ${D}" ;;
+    mcp__linear__*)
+        MSG="> :clipboard: Linear: \`${TOOL_NAME#mcp__linear__}\`" ;;
+    mcp__*)
+        MSG="> :electric_plug: MCP: \`${TOOL_NAME}\`" ;;
+    TaskCreate|TaskUpdate|TaskList|TaskGet)
+        exit 0 ;;
+    *)
+        MSG="> :gear: ${TOOL_NAME}" ;;
+esac
+
+curl -s -o /dev/null -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
+    -H "Authorization: Bot ${BOT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg content "$MSG" '{content: $content}')" &
+
+echo "$NOW" > "$RATE_FILE"

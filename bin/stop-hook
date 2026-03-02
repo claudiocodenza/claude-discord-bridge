@@ -1,105 +1,34 @@
 #!/usr/bin/env bash
 #
 # stop-hook — Claude Code Stop hook
-# Forwards Claude's final response text to Discord.
-#
-# Only sends text blocks that weren't already sent by the progress-hook
-# (which handles intermediate text in real-time). Then resets the
-# sent counter for the next turn.
-#
-# Only fires when DISCORD_CHANNEL_ID is set (i.e., inside a bridge session).
+# Posts Claude's final response to Discord using last_assistant_message
+# from the Stop event JSON.
 #
 
 set -euo pipefail
 
-# Only run inside bridge sessions
 CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
-if [ -z "$CHANNEL_ID" ]; then
-    exit 0
-fi
+[ -z "$CHANNEL_ID" ] && exit 0
 
-# Get bot token from .env
 ENV_FILE="${HOME}/.claude-discord-bridge/.env"
-if [ ! -f "$ENV_FILE" ]; then
-    exit 0
-fi
+[ ! -f "$ENV_FILE" ] && exit 0
 BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
-if [ -z "$BOT_TOKEN" ]; then
-    exit 0
-fi
+[ -z "$BOT_TOKEN" ] && exit 0
 
-# Read event JSON from stdin
 INPUT=$(cat)
+RESPONSE=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
+[ -z "$RESPONSE" ] && exit 0
 
-# Get transcript path from the event
-TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
-if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
-    exit 0
-fi
+# Post to Discord, splitting at 3900 chars
+URL="https://discord.com/api/v10/channels/${CHANNEL_ID}/messages"
+while [ -n "$RESPONSE" ]; do
+    CHUNK="${RESPONSE:0:3900}"
+    RESPONSE="${RESPONSE:3900}"
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON="${TOOLKIT_ROOT}/.venv/bin/python3"
-if [ ! -f "$PYTHON" ]; then
-    PYTHON="python3"
-fi
+    curl -s -o /dev/null -X POST "$URL" \
+        -H "Authorization: Bot ${BOT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n --arg content "$CHUNK" '{content: $content}')"
 
-# Get unsent text blocks (those not already sent by progress-hook)
-RESULT=$("$PYTHON" "$TOOLKIT_ROOT/bin/_transcript_text.py" unsent \
-    --transcript "$TRANSCRIPT_PATH" \
-    --channel "$CHANNEL_ID" 2>/dev/null) || true
-
-if [ -n "$RESULT" ]; then
-    # First line is total count
-    TOTAL_COUNT=$(echo "$RESULT" | head -1)
-    # Rest is NULL-separated text blocks
-    TEXT_DATA=$(echo "$RESULT" | tail -n +2)
-
-    if [ -n "$TEXT_DATA" ]; then
-        # Collect all unsent text
-        RESPONSE=""
-        while IFS= read -r -d $'\0' text_block; do
-            if [ -n "$text_block" ]; then
-                if [ -n "$RESPONSE" ]; then
-                    RESPONSE="${RESPONSE}
-
-${text_block}"
-                else
-                    RESPONSE="$text_block"
-                fi
-            fi
-        done <<< "$TEXT_DATA"
-
-        # Post to Discord with splitting for 4000 char limit
-        while [ -n "$RESPONSE" ]; do
-            CHUNK="${RESPONSE:0:3900}"
-            RESPONSE="${RESPONSE:3900}"
-
-            # Try to break at a newline if splitting
-            if [ -n "$RESPONSE" ]; then
-                LAST_NL=$(echo "$CHUNK" | grep -bno $'\n' | tail -1 | cut -d: -f1 || true)
-                if [ -n "$LAST_NL" ] && [ "$LAST_NL" -gt 100 ]; then
-                    REMAINDER="${CHUNK:$LAST_NL}"
-                    CHUNK="${CHUNK:0:$LAST_NL}"
-                    RESPONSE="${REMAINDER}${RESPONSE}"
-                fi
-            fi
-
-            PAYLOAD=$(jq -n --arg content "$CHUNK" '{content: $content}')
-            curl -s -o /dev/null \
-                -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
-                -H "Authorization: Bot ${BOT_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "$PAYLOAD"
-
-            if [ -n "$RESPONSE" ]; then
-                sleep 0.5
-            fi
-        done
-    fi
-fi
-
-# Reset the sent counter for the next turn
-"$PYTHON" "$TOOLKIT_ROOT/bin/_transcript_text.py" reset \
-    --channel "$CHANNEL_ID" 2>/dev/null || true
-
-exit 0
+    [ -n "$RESPONSE" ] && sleep 0.5
+done
