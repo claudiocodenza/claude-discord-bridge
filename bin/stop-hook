@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
 # stop-hook — Claude Code Stop hook
-# Automatically forwards Claude's final response to Discord.
+# Forwards Claude's final response text to Discord.
 #
-# Reads the Stop event JSON from stdin, extracts the last assistant
-# text from the transcript, and posts it to the Discord channel.
+# Only sends text blocks that weren't already sent by the progress-hook
+# (which handles intermediate text in real-time). Then resets the
+# sent counter for the next turn.
 #
 # Only fires when DISCORD_CHANNEL_ID is set (i.e., inside a bridge session).
-# Skips if dp was already used in the current turn (avoids double-posting).
 #
 
 set -euo pipefail
@@ -37,116 +37,69 @@ if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
     exit 0
 fi
 
-# Use Python to parse the transcript — jq can't handle control characters
-# in some transcript entries
 TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${TOOLKIT_ROOT}/.venv/bin/python3"
 if [ ! -f "$PYTHON" ]; then
     PYTHON="python3"
 fi
 
-RESPONSE=$("$PYTHON" -c "
-import json
-import sys
+# Get unsent text blocks (those not already sent by progress-hook)
+RESULT=$("$PYTHON" "$TOOLKIT_ROOT/bin/_transcript_text.py" unsent \
+    --transcript "$TRANSCRIPT_PATH" \
+    --channel "$CHANNEL_ID" 2>/dev/null) || true
 
-transcript_path = sys.argv[1]
+if [ -n "$RESULT" ]; then
+    # First line is total count
+    TOTAL_COUNT=$(echo "$RESULT" | head -1)
+    # Rest is NULL-separated text blocks
+    TEXT_DATA=$(echo "$RESULT" | tail -n +2)
 
-# Read all lines from transcript
-entries = []
-with open(transcript_path, 'r', errors='replace') as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+    if [ -n "$TEXT_DATA" ]; then
+        # Collect all unsent text
+        RESPONSE=""
+        while IFS= read -r -d $'\0' text_block; do
+            if [ -n "$text_block" ]; then
+                if [ -n "$RESPONSE" ]; then
+                    RESPONSE="${RESPONSE}
 
-if not entries:
-    sys.exit(0)
+${text_block}"
+                else
+                    RESPONSE="$text_block"
+                fi
+            fi
+        done <<< "$TEXT_DATA"
 
-# Find the last user message index
-last_user_idx = -1
-for i in range(len(entries) - 1, -1, -1):
-    if entries[i].get('type') == 'user':
-        last_user_idx = i
-        break
+        # Post to Discord with splitting for 4000 char limit
+        while [ -n "$RESPONSE" ]; do
+            CHUNK="${RESPONSE:0:3900}"
+            RESPONSE="${RESPONSE:3900}"
 
-if last_user_idx < 0:
-    sys.exit(0)
+            # Try to break at a newline if splitting
+            if [ -n "$RESPONSE" ]; then
+                LAST_NL=$(echo "$CHUNK" | grep -bno $'\n' | tail -1 | cut -d: -f1 || true)
+                if [ -n "$LAST_NL" ] && [ "$LAST_NL" -gt 100 ]; then
+                    REMAINDER="${CHUNK:$LAST_NL}"
+                    CHUNK="${CHUNK:0:$LAST_NL}"
+                    RESPONSE="${REMAINDER}${RESPONSE}"
+                fi
+            fi
 
-# Collect all entries after the last user message
-turn_entries = entries[last_user_idx + 1:]
+            PAYLOAD=$(jq -n --arg content "$CHUNK" '{content: $content}')
+            curl -s -o /dev/null \
+                -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
+                -H "Authorization: Bot ${BOT_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD"
 
-# Check if dp was used in this turn (avoid double-posting)
-for entry in turn_entries:
-    if entry.get('type') != 'assistant':
-        continue
-    content = entry.get('message', {}).get('content', [])
-    for block in content:
-        if block.get('type') == 'tool_use' and block.get('name') == 'Bash':
-            cmd = block.get('input', {}).get('command', '')
-            if cmd.strip().startswith('dp ') or cmd.strip().startswith('dp\"'):
-                # dp was used, skip to avoid double-posting
-                sys.exit(0)
-
-# Collect text from assistant messages in this turn
-texts = []
-for entry in turn_entries:
-    if entry.get('type') != 'assistant':
-        continue
-    content = entry.get('message', {}).get('content', [])
-    for block in content:
-        if block.get('type') == 'text':
-            text = block.get('text', '').strip()
-            if text:
-                texts.append(text)
-
-if not texts:
-    sys.exit(0)
-
-# Join all text blocks — includes intermediate thinking outputs
-# (e.g. 'Let me check...', 'Found the issue!') and the final response.
-# Separate distinct blocks with blank lines for readability.
-response = '\n\n'.join(texts)
-print(response)
-" "$TRANSCRIPT_PATH" 2>/dev/null)
-
-if [ -z "$RESPONSE" ]; then
-    exit 0
+            if [ -n "$RESPONSE" ]; then
+                sleep 0.5
+            fi
+        done
+    fi
 fi
 
-# Split and post to Discord (4000 char limit per message)
-MAX_LEN=3900  # Leave some margin
-
-while [ -n "$RESPONSE" ]; do
-    CHUNK="${RESPONSE:0:$MAX_LEN}"
-    RESPONSE="${RESPONSE:$MAX_LEN}"
-
-    # If we're splitting mid-text, try to break at a newline
-    if [ -n "$RESPONSE" ]; then
-        # Find last newline in chunk
-        LAST_NL=$(echo "$CHUNK" | grep -bno $'\n' | tail -1 | cut -d: -f1 || true)
-        if [ -n "$LAST_NL" ] && [ "$LAST_NL" -gt 100 ]; then
-            REMAINDER="${CHUNK:$LAST_NL}"
-            CHUNK="${CHUNK:0:$LAST_NL}"
-            RESPONSE="${REMAINDER}${RESPONSE}"
-        fi
-    fi
-
-    # Post to Discord
-    PAYLOAD=$(jq -n --arg content "$CHUNK" '{content: $content}')
-    curl -s -o /dev/null \
-        -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
-        -H "Authorization: Bot ${BOT_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$PAYLOAD"
-
-    # Small delay between chunks to maintain order
-    if [ -n "$RESPONSE" ]; then
-        sleep 0.5
-    fi
-done
+# Reset the sent counter for the next turn
+"$PYTHON" "$TOOLKIT_ROOT/bin/_transcript_text.py" reset \
+    --channel "$CHANNEL_ID" 2>/dev/null || true
 
 exit 0
