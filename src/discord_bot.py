@@ -62,7 +62,7 @@ class MessageProcessor:
         if content.startswith('/'):
             return f"{content}{attachment_str}"
         else:
-            return f"Discord notification: {content}{attachment_str}"
+            return f"{content}{attachment_str}"
 
 
 class ClaudeCLIBot(commands.Bot):
