@@ -25,10 +25,15 @@ while [ -n "$RESPONSE" ]; do
     CHUNK="${RESPONSE:0:3900}"
     RESPONSE="${RESPONSE:3900}"
 
-    curl -s -o /dev/null -X POST "$URL" \
+    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" \
         -H "Authorization: Bot ${BOT_TOKEN}" \
         -H "Content-Type: application/json" \
-        -d "$(jq -n --arg content "$CHUNK" '{content: $content}')"
+        -d "$(jq -n --arg content "$CHUNK" '{content: $content}')")
+
+    if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+        echo "Discord API returned HTTP $HTTP_CODE" >&2
+        exit 1
+    fi
 
     [ -n "$RESPONSE" ] && sleep 0.5
 done
