@@ -5,19 +5,17 @@
 # from the Stop event JSON.
 #
 
-set -euo pipefail
-
 CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
-[ -z "$CHANNEL_ID" ] && exit 0
+if [ -z "$CHANNEL_ID" ]; then exit 0; fi
 
 ENV_FILE="${HOME}/.claude-discord-bridge/.env"
-[ ! -f "$ENV_FILE" ] && exit 0
+if [ ! -f "$ENV_FILE" ]; then exit 0; fi
 BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
-[ -z "$BOT_TOKEN" ] && exit 0
+if [ -z "$BOT_TOKEN" ]; then exit 0; fi
 
 INPUT=$(cat)
 RESPONSE=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
-[ -z "$RESPONSE" ] && exit 0
+if [ -z "$RESPONSE" ]; then exit 0; fi
 
 # Post to Discord, splitting at 3900 chars
 URL="https://discord.com/api/v10/channels/${CHANNEL_ID}/messages"
@@ -25,15 +23,12 @@ while [ -n "$RESPONSE" ]; do
     CHUNK="${RESPONSE:0:3900}"
     RESPONSE="${RESPONSE:3900}"
 
-    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" \
+    curl -s -o /dev/null -X POST "$URL" \
         -H "Authorization: Bot ${BOT_TOKEN}" \
         -H "Content-Type: application/json" \
-        -d "$(jq -n --arg content "$CHUNK" '{content: $content}')")
+        -d "$(jq -n --arg content "$CHUNK" '{content: $content}')"
 
-    if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-        echo "Discord API returned HTTP $HTTP_CODE" >&2
-        exit 1
-    fi
-
-    [ -n "$RESPONSE" ] && sleep 0.5
+    if [ -n "$RESPONSE" ]; then sleep 0.5; fi
 done
+
+exit 0
