@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# claude-session-wrapper — Starts Claude CLI with stale-lock recovery.
+#
+# If Claude refuses to start because a session ID is "already in use"
+# (stale lock from a crashed process), this wrapper:
+#   1. Cleans up the stale lock file and retries
+#   2. If still blocked, generates a new UUID, writes it to a recovery
+#      file, and starts with the new ID
+#
+# Usage: claude-session-wrapper <session-id> [claude args...]
+#   Args must use __SESSION_ID__ as a placeholder for the session UUID.
+#
+# Recovery file: ~/.claude-discord-bridge/recovered-session-ids/<channel-id>
+#   Contains the new UUID so the bridge can update its config.
+
+set -uo pipefail
+
+SESSION_ID="$1"
+shift
+CLAUDE_ARGS=("$@")
+
+CLAUDE_TASKS_DIR="$HOME/.claude/tasks"
+RECOVERY_DIR="$HOME/.claude-discord-bridge/recovered-session-ids"
+CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
+
+build_args() {
+    local sid="$1"
+    shift
+    local args=()
+    for arg in "$@"; do
+        if [[ "$arg" == "__SESSION_ID__" ]]; then
+            args+=("$sid")
+        else
+            args+=("$arg")
+        fi
+    done
+    echo "${args[@]}"
+}
+
+cleanup_lock() {
+    local sid="$1"
+    local lock_file="$CLAUDE_TASKS_DIR/$sid/.lock"
+    if [[ -f "$lock_file" ]]; then
+        rm -f "$lock_file" 2>/dev/null && \
+            echo "[session-wrapper] Removed stale lock for $sid" >&2
+        return 0
+    fi
+    return 1
+}
+
+save_recovered_id() {
+    local new_id="$1"
+    if [[ -n "$CHANNEL_ID" ]]; then
+        mkdir -p "$RECOVERY_DIR"
+        echo "$new_id" > "$RECOVERY_DIR/$CHANNEL_ID"
+        echo "[session-wrapper] Saved recovered session ID to $RECOVERY_DIR/$CHANNEL_ID" >&2
+    fi
+}
+
+is_lock_error() {
+    # Check if the session ID has a lock file AND no claude process is using it
+    local sid="$1"
+    local lock_file="$CLAUDE_TASKS_DIR/$sid/.lock"
+    [[ -f "$lock_file" ]] || return 1
+    # Verify no process is actually using this session ID
+    ! ps aux | grep -v grep | grep -qE "(--session-id|--resume)\s+$sid"
+}
+
+# --- Pre-flight: clean stale lock before first attempt ---
+cleanup_lock "$SESSION_ID" 2>/dev/null || true
+
+# --- Attempt 1: try with original session ID ---
+read -ra ARGS <<< "$(build_args "$SESSION_ID" "${CLAUDE_ARGS[@]}")"
+claude "${ARGS[@]}"
+exit_code=$?
+
+# If Claude exited successfully or the user quit normally, we're done
+if [[ $exit_code -eq 0 ]]; then
+    exit 0
+fi
+
+# Check if this was a lock error (Claude exits quickly with error)
+if ! is_lock_error "$SESSION_ID"; then
+    # Not a lock issue — normal exit
+    exit $exit_code
+fi
+
+echo "[session-wrapper] Session $SESSION_ID appears locked, cleaning up..." >&2
+cleanup_lock "$SESSION_ID"
+
+# --- Attempt 2: retry after lock cleanup ---
+claude "${ARGS[@]}"
+exit_code=$?
+
+if [[ $exit_code -eq 0 ]]; then
+    exit 0
+fi
+
+if ! is_lock_error "$SESSION_ID"; then
+    exit $exit_code
+fi
+
+# --- Attempt 3: generate new UUID and retry ---
+NEW_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+echo "[session-wrapper] Lock persists, switching to new session ID: $NEW_ID" >&2
+
+# Build new args, replacing --resume with --session-id since we're starting fresh
+NEW_CLAUDE_ARGS=()
+for arg in "${CLAUDE_ARGS[@]}"; do
+    if [[ "$arg" == "--resume" ]]; then
+        NEW_CLAUDE_ARGS+=("--session-id")
+    else
+        NEW_CLAUDE_ARGS+=("$arg")
+    fi
+done
+
+read -ra ARGS <<< "$(build_args "$NEW_ID" "${NEW_CLAUDE_ARGS[@]}")"
+save_recovered_id "$NEW_ID"
+exec claude "${ARGS[@]}"

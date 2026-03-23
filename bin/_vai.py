@@ -116,6 +116,16 @@ def cmd_start():
     # Third pane for monitoring
     tmux.send_command("0.2", "echo 'Claude-Discord Bridge - Monitoring'")
 
+    # Check for recovered session IDs (stale lock fallback)
+    if channels:
+        time.sleep(3)  # give wrapper scripts time to detect locks
+        for channel_id, cfg in channels:
+            recovered_id = tmux.get_recovered_session_id(channel_id)
+            if recovered_id:
+                channel_name = cfg.get('name', '')
+                print(f"  Session ID recovered for {channel_name}: {recovered_id[:8]}...")
+                settings.update_channel_config(channel_id, claude_session_id=recovered_id)
+
     print("\nAll services started successfully!")
 
     # Show channel sessions

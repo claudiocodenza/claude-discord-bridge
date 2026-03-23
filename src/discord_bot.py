@@ -222,6 +222,24 @@ class ClaudeCLIBot(commands.Bot):
         except Exception as e:
             logger.error(f'Error in cleanup task: {e}')
 
+        # Check for recovered session IDs (wrapper replaced a stale-locked session ID)
+        try:
+            channels = self.settings.list_channel_configs(active_only=True)
+            for ch_id, cfg in channels:
+                recovered_id = self.tmux_manager.get_recovered_session_id(ch_id)
+                if recovered_id:
+                    channel_name = cfg.get('name', '')
+                    old_id = cfg.get('claude_session_id', '')[:8]
+                    logger.info(
+                        f'Session ID recovered for {channel_name}: '
+                        f'{old_id}... -> {recovered_id[:8]}...'
+                    )
+                    self.settings.update_channel_config(
+                        ch_id, claude_session_id=recovered_id
+                    )
+        except Exception as e:
+            logger.error(f'Error checking recovered session IDs: {e}')
+
         # Check for stale sessions (config says active but tmux session is gone)
         try:
             channels = self.settings.list_channel_configs(active_only=True)

@@ -5,6 +5,7 @@ Manages tmux sessions
 """
 
 import os
+import re
 import shlex
 import sys
 import subprocess
@@ -144,6 +145,43 @@ class TmuxManager:
         sanitized = ''.join(c if c.isalnum() or c in '-_' else '-' for c in name)
         return f"cb-{sanitized}"
 
+    @staticmethod
+    def _is_claude_process_running(session_id: str) -> bool:
+        """Check if a Claude CLI process is running with the given session ID."""
+        try:
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True, text=True
+            )
+            # Match processes with --session-id or --resume followed by this UUID
+            pattern = f"(--session-id|--resume)\\s+{re.escape(session_id)}"
+            return bool(re.search(pattern, result.stdout))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _cleanup_stale_session_lock(session_id: str) -> bool:
+        """Remove stale Claude CLI lock files for a session ID if no process is running.
+
+        Returns True if a stale lock was cleaned up, False otherwise.
+        """
+        if TmuxManager._is_claude_process_running(session_id):
+            return False
+
+        claude_dir = Path.home() / '.claude'
+        lock_file = claude_dir / 'tasks' / session_id / '.lock'
+        cleaned = False
+
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                print(f"  Cleaned up stale lock for session {session_id[:8]}...")
+                cleaned = True
+            except OSError as e:
+                print(f"  Warning: could not remove stale lock {lock_file}: {e}")
+
+        return cleaned
+
     def create_claude_session(self, session_num: int, work_dir: str, options: str = "",
                               channel_id: str = "", system_prompt: str = "",
                               channel_name: str = "", resume: bool = False,
@@ -177,6 +215,9 @@ class TmuxManager:
         if not claude_session_id:
             claude_session_id = str(uuid.uuid4())
 
+        # Clean up stale locks before attempting to start
+        self._cleanup_stale_session_lock(claude_session_id)
+
         try:
             # Build Claude command with bridge bin in PATH and channel ID
             bridge_bin = str(Path(__file__).parent.parent / 'bin')
@@ -185,28 +226,25 @@ class TmuxManager:
                 env_exports += f' && export DISCORD_CHANNEL_ID="{channel_id}"'
 
             # Build claude command with options
-            claude_args = options
-            if resume and claude_session_id:
-                # Try to resume; if it fails (no prior conversation), start fresh
-                resume_args = f'{options} --resume {claude_session_id}'
-                fresh_args = f'{options} --session-id {claude_session_id}'
-                claude_args = None  # signal to use the retry wrapper below
-            else:
-                # New conversation — pin it to this session ID
-                claude_args = f'{options} --session-id {claude_session_id}'
             prompt_suffix = ''
             if system_prompt:
                 escaped_prompt = system_prompt.replace("'", "'\\''")
                 prompt_suffix = f" --append-system-prompt '{escaped_prompt}'"
 
-            if claude_args is not None:
-                # Simple case: single command
-                claude_cmd = f'{env_exports} && cd "{work_dir}" && claude {claude_args}{prompt_suffix}'.strip()
-            else:
-                # Resume with fallback: try --resume first, fall back to --session-id
+            wrapper = str(Path(__file__).parent.parent / 'bin' / 'claude-session-wrapper')
+
+            if resume and claude_session_id:
+                # Try to resume; if it fails (no prior conversation), start fresh
                 claude_cmd = (
                     f'{env_exports} && cd "{work_dir}" && '
-                    f'(claude {resume_args}{prompt_suffix} || claude {fresh_args}{prompt_suffix})'
+                    f'({wrapper} {claude_session_id} {options} --resume __SESSION_ID__{prompt_suffix} || '
+                    f'{wrapper} {claude_session_id} {options} --session-id __SESSION_ID__{prompt_suffix})'
+                ).strip()
+            else:
+                # New conversation — pin it to this session ID
+                claude_cmd = (
+                    f'{env_exports} && cd "{work_dir}" && '
+                    f'{wrapper} {claude_session_id} {options} --session-id __SESSION_ID__{prompt_suffix}'
                 ).strip()
 
             # Wrap in a login shell so ~/.zshenv / ~/.zprofile are sourced,
@@ -224,6 +262,24 @@ class TmuxManager:
         except subprocess.CalledProcessError as e:
             print(f"Error creating Claude session {session_name}: {e}")
             return {'success': False, 'claude_session_id': claude_session_id}
+
+    @staticmethod
+    def get_recovered_session_id(channel_id: str) -> str:
+        """Check if a session ID was recovered (replaced due to stale lock).
+
+        Returns the new session ID if recovery happened, empty string otherwise.
+        Consumes the recovery file (deletes it after reading).
+        """
+        recovery_dir = Path.home() / '.claude-discord-bridge' / 'recovered-session-ids'
+        recovery_file = recovery_dir / channel_id
+        if recovery_file.exists():
+            try:
+                new_id = recovery_file.read_text().strip()
+                recovery_file.unlink()
+                return new_id
+            except OSError:
+                return ''
+        return ''
 
     def _has_session(self, session_name: str) -> bool:
         """Check if a tmux session exists by exact name."""
