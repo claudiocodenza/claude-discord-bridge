@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # stop-hook — Claude Code Stop hook
-# Posts Claude's final response to Discord using last_assistant_message
-# from the Stop event JSON.
+# Posts Claude's response to Discord by reading the session transcript
+# and extracting all assistant text since the last real user message.
+# Falls back to last_assistant_message if transcript parsing fails.
 #
 
 CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
@@ -14,7 +15,59 @@ BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
 if [ -z "$BOT_TOKEN" ]; then exit 0; fi
 
 INPUT=$(cat)
-RESPONSE=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
+TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // empty')
+RESPONSE=""
+
+# Primary: extract all assistant text from transcript since last real user message
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+    RESPONSE=$(python3 - "$TRANSCRIPT" <<'PYEOF'
+import json, sys
+
+transcript_path = sys.argv[1]
+lines = []
+with open(transcript_path) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            try:
+                lines.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+# Find index of last real user message (content is a string, not tool_result)
+last_user_idx = -1
+for i, msg in enumerate(lines):
+    if msg.get("type") == "user":
+        content = msg.get("message", {}).get("content")
+        if isinstance(content, str):
+            last_user_idx = i
+
+if last_user_idx < 0:
+    sys.exit(0)
+
+# Collect all assistant text blocks after that point
+texts = []
+for msg in lines[last_user_idx + 1:]:
+    if msg.get("type") == "assistant":
+        content = msg.get("message", {}).get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "").strip()
+                    if text:
+                        texts.append(text)
+
+if texts:
+    print("\n\n".join(texts))
+PYEOF
+    )
+fi
+
+# Fallback: use last_assistant_message from the Stop event
+if [ -z "$RESPONSE" ]; then
+    RESPONSE=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
+fi
+
 if [ -z "$RESPONSE" ]; then exit 0; fi
 
 # Post to Discord, splitting at 3900 chars
