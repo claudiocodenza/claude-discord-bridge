@@ -3,6 +3,7 @@
 # stop-hook — Claude Code Stop hook
 # Posts Claude's response to Discord by reading the session transcript
 # and extracting all assistant text since the last real user message.
+# Also captures Agent tool results which contain subagent output.
 # Falls back to last_assistant_message if transcript parsing fails.
 #
 
@@ -18,7 +19,7 @@ INPUT=$(cat)
 TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 RESPONSE=""
 
-# Primary: extract all assistant text from transcript since last real user message
+# Primary: extract all assistant text + agent results from transcript
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
     RESPONSE=$(python3 - "$TRANSCRIPT" <<'PYEOF'
 import json, sys
@@ -45,17 +46,51 @@ for i, msg in enumerate(lines):
 if last_user_idx < 0:
     sys.exit(0)
 
-# Collect all assistant text blocks after that point
-texts = []
+# First pass: collect Agent tool_use IDs so we can capture their results
+agent_tool_ids = set()
 for msg in lines[last_user_idx + 1:]:
     if msg.get("type") == "assistant":
         content = msg.get("message", {}).get("content", [])
         if isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text", "").strip()
-                    if text:
-                        texts.append(text)
+                if (isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "Agent"):
+                    agent_tool_ids.add(block.get("id", ""))
+
+# Second pass: collect assistant text blocks AND agent tool results
+texts = []
+for msg in lines[last_user_idx + 1:]:
+    msg_type = msg.get("type")
+    content = msg.get("message", {}).get("content", [])
+
+    if msg_type == "assistant" and isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    texts.append(text)
+
+    elif msg_type == "user" and isinstance(content, list):
+        # Check for Agent tool results
+        for block in content:
+            if (isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and block.get("tool_use_id", "") in agent_tool_ids):
+                rc = block.get("content", "")
+                if isinstance(rc, str):
+                    text = rc.strip()
+                elif isinstance(rc, list):
+                    parts = []
+                    for sub in rc:
+                        if isinstance(sub, dict) and sub.get("type") == "text":
+                            parts.append(sub.get("text", "").strip())
+                    text = "\n".join(parts)
+                else:
+                    text = ""
+                # Skip async launch confirmations — not actual results
+                if text and not text.startswith("Async agent launched successfully"):
+                    texts.append(text)
 
 if texts:
     print("\n\n".join(texts))
