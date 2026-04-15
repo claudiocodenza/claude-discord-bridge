@@ -105,18 +105,54 @@ fi
 
 if [ -z "$RESPONSE" ]; then exit 0; fi
 
-# Post to Discord, splitting at 3900 chars
+# Post to Discord, splitting at newlines to stay under 1900 chars per message
 URL="https://discord.com/api/v10/channels/${CHANNEL_ID}/messages"
-while [ -n "$RESPONSE" ]; do
-    CHUNK="${RESPONSE:0:3900}"
-    RESPONSE="${RESPONSE:3900}"
+python3 - "$RESPONSE" "$URL" "$BOT_TOKEN" <<'PYEOF'
+import sys, json, subprocess, time
 
-    curl -s -o /dev/null -X POST "$URL" \
-        -H "Authorization: Bot ${BOT_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$(jq -n --arg content "$CHUNK" '{content: $content}')"
+response = sys.argv[1]
+url = sys.argv[2]
+bot_token = sys.argv[3]
+LIMIT = 1900
 
-    if [ -n "$RESPONSE" ]; then sleep 0.5; fi
-done
+def send(text):
+    text = text.strip()
+    if not text:
+        return
+    payload = json.dumps({"content": text})
+    subprocess.run([
+        "curl", "-s", "-o", "/dev/null", "-X", "POST", url,
+        "-H", f"Authorization: Bot {bot_token}",
+        "-H", "Content-Type: application/json",
+        "-d", payload
+    ], check=False)
+
+chunks = []
+current = ""
+for line in response.split("\n"):
+    # If a single line exceeds LIMIT, flush current and hard-split the line
+    if len(line) > LIMIT:
+        if current:
+            chunks.append(current)
+            current = ""
+        while len(line) > LIMIT:
+            chunks.append(line[:LIMIT])
+            line = line[LIMIT:]
+        if line:
+            current = line
+    elif len(current) + 1 + len(line) > LIMIT:
+        chunks.append(current)
+        current = line
+    else:
+        current = current + "\n" + line if current else line
+
+if current:
+    chunks.append(current)
+
+for i, chunk in enumerate(chunks):
+    send(chunk)
+    if i < len(chunks) - 1:
+        time.sleep(0.5)
+PYEOF
 
 exit 0
