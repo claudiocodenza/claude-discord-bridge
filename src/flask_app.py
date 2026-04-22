@@ -78,13 +78,16 @@ class TmuxMessageForwarder:
     @classmethod
     def _try_answer_question(cls, message: str, session_name: str,
                              channel_id: str) -> bool:
-        """If there's a pending AskUserQuestion, answer it via the picker.
+        """If there's a pending AskUserQuestion, write the answer to the
+        answer file so the question-hook can unblock and return it.
 
         Returns True if the message was handled as a question answer.
         """
         import json, os
 
         question_file = f"/tmp/claude-question-{channel_id}.json"
+        answer_file = f"/tmp/claude-answer-{channel_id}.json"
+
         if not os.path.exists(question_file):
             return False
 
@@ -94,51 +97,54 @@ class TmuxMessageForwarder:
         except (json.JSONDecodeError, IOError):
             return False
 
-        # Remove the file so we don't double-handle
-        os.unlink(question_file)
-
         questions = ctx.get("questions", [])
         if not questions:
             return False
 
-        # Use the first question's options
-        options = questions[0].get("options", [])
-        num_options = len(options)
-        answer = message.strip()
+        # Build answers dict: {question_text: selected_label_or_text}
+        # For multi-question asks, apply the same message to all
+        # (most common case is a single question)
+        answers = {}
+        answer_text = message.strip()
 
+        for q in questions:
+            q_text = q.get("question", "")
+            options = q.get("options", [])
+            num_options = len(options)
+            multi = q.get("multiSelect", False)
+
+            try:
+                if multi and "," in answer_text:
+                    # Multi-select: comma-separated numbers
+                    choices = [int(c.strip()) for c in answer_text.split(",")]
+                    labels = []
+                    for c in choices:
+                        if 1 <= c <= num_options:
+                            labels.append(options[c - 1].get("label", ""))
+                        elif c == num_options + 1:
+                            labels.append("Other")
+                    answers[q_text] = ", ".join(labels)
+                else:
+                    choice = int(answer_text)
+                    if 1 <= choice <= num_options:
+                        answers[q_text] = options[choice - 1].get("label", "")
+                    elif choice == num_options + 1:
+                        answers[q_text] = "Other"
+                    else:
+                        answers[q_text] = answer_text
+            except ValueError:
+                # Free text — goes through as the answer
+                answers[q_text] = answer_text
+
+        # Write the answer file — the hook is polling for this
         try:
-            choice = int(answer)
-            if 1 <= choice <= num_options:
-                # Select option N: press Down (choice-1) times, then Enter
-                for _ in range(choice - 1):
-                    cls._send_tmux_keys(session_name, 'Down')
-                    time.sleep(0.1)
-                cls._send_tmux_keys(session_name, 'C-m')
-                logger.info(f"Answered question with option {choice}")
-                return True
-            elif choice == num_options + 1:
-                # "Other" — navigate past all options, press Enter for Other,
-                # then wait for text input
-                for _ in range(num_options):
-                    cls._send_tmux_keys(session_name, 'Down')
-                    time.sleep(0.1)
-                cls._send_tmux_keys(session_name, 'C-m')
-                logger.info(f"Selected Other (no text)")
-                return True
-        except ValueError:
-            pass
-
-        # Free text answer → navigate to "Other", select it, type the answer
-        for _ in range(num_options):
-            cls._send_tmux_keys(session_name, 'Down')
-            time.sleep(0.1)
-        cls._send_tmux_keys(session_name, 'C-m')
-        time.sleep(0.3)
-        cls._send_tmux_keys(session_name, answer)
-        time.sleep(0.1)
-        cls._send_tmux_keys(session_name, 'C-m')
-        logger.info(f"Answered question with free text: {answer[:50]}")
-        return True
+            with open(answer_file, "w") as f:
+                json.dump(answers, f)
+            logger.info(f"Wrote answer for {channel_id}: {answers}")
+            return True
+        except IOError as e:
+            logger.error(f"Failed to write answer file: {e}")
+            return False
 
     @classmethod
     def _send_tmux_keys(cls, session_name: str, keys: str):

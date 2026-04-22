@@ -1,26 +1,40 @@
 #!/usr/bin/env bash
 #
 # question-hook — Claude Code PreToolUse hook for AskUserQuestion
-# Intercepts AskUserQuestion, formats the question + options,
-# and sends to Discord so the user can reply with a number.
-# Saves option count to a temp file so the bridge can inject
-# the right keystrokes into the picker.
+#
+# Intercepts AskUserQuestion, forwards the question to Discord, then
+# polls for the user's reply (written by the bridge to an answer file)
+# and returns it as the tool's answer via permissionDecision + updatedInput.
 #
 
 CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
-if [ -z "$CHANNEL_ID" ]; then exit 0; fi
+if [ -z "$CHANNEL_ID" ]; then
+    # Not in a Discord session — let the tool proceed normally
+    exit 0
+fi
 
 ENV_FILE="${HOME}/.claude-discord-bridge/.env"
-if [ ! -f "$ENV_FILE" ]; then exit 0; fi
-BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
-if [ -z "$BOT_TOKEN" ]; then exit 0; fi
+BOT_TOKEN=""
+if [ -f "$ENV_FILE" ]; then
+    BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
+fi
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 if [ "$TOOL_NAME" != "AskUserQuestion" ]; then exit 0; fi
 
-# Format the questions and options for Discord
-MSG=$(python3 - "$INPUT" <<'PYEOF'
+QUESTION_FILE="/tmp/claude-question-${CHANNEL_ID}.json"
+ANSWER_FILE="/tmp/claude-answer-${CHANNEL_ID}.json"
+
+# Clean up any stale files
+rm -f "$QUESTION_FILE" "$ANSWER_FILE"
+
+# Save the question context for the bridge to read
+echo "$INPUT" | jq '.tool_input' > "$QUESTION_FILE"
+
+# Format and send the question to Discord
+if [ -n "$BOT_TOKEN" ]; then
+    MSG=$(python3 - "$INPUT" <<'PYEOF'
 import json, sys
 
 data = json.loads(sys.argv[1])
@@ -28,8 +42,6 @@ tool_input = data.get("tool_input", {})
 questions = tool_input.get("questions", [])
 
 lines = ["📋 **Claude has a question for you:**\n"]
-total_options = 0
-
 for q in questions:
     question_text = q.get("question", "")
     options = q.get("options", [])
@@ -39,33 +51,65 @@ for q in questions:
     for i, opt in enumerate(options, 1):
         label = opt.get("label", "")
         desc = opt.get("description", "")
-        lines.append(f"  {i}. **{label}** — {desc}")
-    lines.append(f"  {len(options) + 1}. **Other** — Type your own answer")
+        lines.append(f"  **{i}.** {label} — {desc}")
+    lines.append(f"  **{len(options) + 1}.** Other — Type your own answer")
     if multi:
-        lines.append("_(You can select multiple — e.g. `1,3`)_")
+        lines.append("_Reply with numbers separated by commas (e.g. `1,3`) or type your answer._")
     else:
         lines.append("_Reply with a number or type your answer._")
     lines.append("")
-    total_options = len(options)
 
 print("\n".join(lines))
 PYEOF
 )
+    curl -s -o /dev/null -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
+        -H "Authorization: Bot ${BOT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n --arg content "$MSG" '{content: $content}')"
+fi
 
-if [ -z "$MSG" ]; then exit 0; fi
+# Poll for the answer file (10 minute timeout)
+TIMEOUT=600
+ELAPSED=0
+while [ ! -f "$ANSWER_FILE" ] && [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+done
 
-# Save question context so bridge can handle the reply
-QUESTION_FILE="/tmp/claude-question-${CHANNEL_ID}.json"
-echo "$INPUT" | jq '{
-    questions: .tool_input.questions,
-    timestamp: now | todate
-}' > "$QUESTION_FILE"
+if [ ! -f "$ANSWER_FILE" ]; then
+    # Timeout — fail the tool use
+    rm -f "$QUESTION_FILE"
+    jq -n '{
+        hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: "AskUserQuestion timed out waiting for Discord reply"
+        }
+    }'
+    exit 0
+fi
 
-# Send to Discord
-curl -s -o /dev/null -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
-    -H "Authorization: Bot ${BOT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "$(jq -n --arg content "$MSG" '{content: $content}')"
+# Read the answer and build the response
+ANSWER_JSON=$(cat "$ANSWER_FILE")
+rm -f "$QUESTION_FILE" "$ANSWER_FILE"
 
-# Allow the tool to proceed (the CLI will show the picker)
-exit 0
+# The bridge writes answers as {"question text": "selected label"}
+# We need to return that as updatedInput.answers
+python3 - "$INPUT" "$ANSWER_JSON" <<'PYEOF'
+import json, sys
+
+orig_input = json.loads(sys.argv[1])
+answers = json.loads(sys.argv[2])
+
+tool_input = orig_input.get("tool_input", {})
+tool_input["answers"] = answers
+
+response = {
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": tool_input
+    }
+}
+print(json.dumps(response))
+PYEOF
