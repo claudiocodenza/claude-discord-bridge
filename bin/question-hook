@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# question-hook — Claude Code PreToolUse hook for AskUserQuestion
+# Intercepts AskUserQuestion, formats the question + options,
+# and sends to Discord so the user can reply with a number.
+# Saves option count to a temp file so the bridge can inject
+# the right keystrokes into the picker.
+#
+
+CHANNEL_ID="${DISCORD_CHANNEL_ID:-}"
+if [ -z "$CHANNEL_ID" ]; then exit 0; fi
+
+ENV_FILE="${HOME}/.claude-discord-bridge/.env"
+if [ ! -f "$ENV_FILE" ]; then exit 0; fi
+BOT_TOKEN=$(grep '^DISCORD_BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
+if [ -z "$BOT_TOKEN" ]; then exit 0; fi
+
+INPUT=$(cat)
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+if [ "$TOOL_NAME" != "AskUserQuestion" ]; then exit 0; fi
+
+# Format the questions and options for Discord
+MSG=$(python3 - "$INPUT" <<'PYEOF'
+import json, sys
+
+data = json.loads(sys.argv[1])
+tool_input = data.get("tool_input", {})
+questions = tool_input.get("questions", [])
+
+lines = ["📋 **Claude has a question for you:**\n"]
+total_options = 0
+
+for q in questions:
+    question_text = q.get("question", "")
+    options = q.get("options", [])
+    multi = q.get("multiSelect", False)
+
+    lines.append(f"**{question_text}**")
+    for i, opt in enumerate(options, 1):
+        label = opt.get("label", "")
+        desc = opt.get("description", "")
+        lines.append(f"  {i}. **{label}** — {desc}")
+    lines.append(f"  {len(options) + 1}. **Other** — Type your own answer")
+    if multi:
+        lines.append("_(You can select multiple — e.g. `1,3`)_")
+    else:
+        lines.append("_Reply with a number or type your answer._")
+    lines.append("")
+    total_options = len(options)
+
+print("\n".join(lines))
+PYEOF
+)
+
+if [ -z "$MSG" ]; then exit 0; fi
+
+# Save question context so bridge can handle the reply
+QUESTION_FILE="/tmp/claude-question-${CHANNEL_ID}.json"
+echo "$INPUT" | jq '{
+    questions: .tool_input.questions,
+    timestamp: now | todate
+}' > "$QUESTION_FILE"
+
+# Send to Discord
+curl -s -o /dev/null -X POST "https://discord.com/api/v10/channels/${CHANNEL_ID}/messages" \
+    -H "Authorization: Bot ${BOT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg content "$MSG" '{content: $content}')"
+
+# Allow the tool to proceed (the CLI will show the picker)
+exit 0

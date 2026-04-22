@@ -42,11 +42,25 @@ class TmuxMessageForwarder:
 
     @classmethod
     def forward_message(cls, message: str, session_num: int,
-                        tmux_session: str = "") -> Tuple[bool, Optional[str]]:
-        """Forward a message to the specified tmux session."""
+                        tmux_session: str = "",
+                        channel_id: str = "") -> Tuple[bool, Optional[str]]:
+        """Forward a message to the specified tmux session.
+
+        If there's a pending AskUserQuestion for this channel, interpret the
+        message as an answer and send appropriate keystrokes to the picker.
+        """
         try:
-            # Use named session if provided, otherwise fall back to numeric
             session_name = tmux_session or f"{cls.SESSION_NAME_PREFIX}-{session_num}"
+
+            # Check for pending AskUserQuestion
+            if channel_id:
+                answered = cls._try_answer_question(
+                    message, session_name, channel_id
+                )
+                if answered:
+                    return True, None
+
+            # Normal message forwarding
             cls._send_tmux_keys(session_name, message)
             time.sleep(cls.TMUX_DELAY_SECONDS)
             cls._send_tmux_keys(session_name, 'C-m')
@@ -60,6 +74,71 @@ class TmuxMessageForwarder:
             error_msg = f"Unexpected error: {e}"
             logger.error(error_msg)
             return False, error_msg
+
+    @classmethod
+    def _try_answer_question(cls, message: str, session_name: str,
+                             channel_id: str) -> bool:
+        """If there's a pending AskUserQuestion, answer it via the picker.
+
+        Returns True if the message was handled as a question answer.
+        """
+        import json, os
+
+        question_file = f"/tmp/claude-question-{channel_id}.json"
+        if not os.path.exists(question_file):
+            return False
+
+        try:
+            with open(question_file) as f:
+                ctx = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return False
+
+        # Remove the file so we don't double-handle
+        os.unlink(question_file)
+
+        questions = ctx.get("questions", [])
+        if not questions:
+            return False
+
+        # Use the first question's options
+        options = questions[0].get("options", [])
+        num_options = len(options)
+        answer = message.strip()
+
+        try:
+            choice = int(answer)
+            if 1 <= choice <= num_options:
+                # Select option N: press Down (choice-1) times, then Enter
+                for _ in range(choice - 1):
+                    cls._send_tmux_keys(session_name, 'Down')
+                    time.sleep(0.1)
+                cls._send_tmux_keys(session_name, 'C-m')
+                logger.info(f"Answered question with option {choice}")
+                return True
+            elif choice == num_options + 1:
+                # "Other" — navigate past all options, press Enter for Other,
+                # then wait for text input
+                for _ in range(num_options):
+                    cls._send_tmux_keys(session_name, 'Down')
+                    time.sleep(0.1)
+                cls._send_tmux_keys(session_name, 'C-m')
+                logger.info(f"Selected Other (no text)")
+                return True
+        except ValueError:
+            pass
+
+        # Free text answer → navigate to "Other", select it, type the answer
+        for _ in range(num_options):
+            cls._send_tmux_keys(session_name, 'Down')
+            time.sleep(0.1)
+        cls._send_tmux_keys(session_name, 'C-m')
+        time.sleep(0.3)
+        cls._send_tmux_keys(session_name, answer)
+        time.sleep(0.1)
+        cls._send_tmux_keys(session_name, 'C-m')
+        logger.info(f"Answered question with free text: {answer[:50]}")
+        return True
 
     @classmethod
     def _send_tmux_keys(cls, session_name: str, keys: str):
@@ -151,7 +230,8 @@ class FlaskBridgeApp:
             print(f"[{target}] {username}: {preview}")
 
             success, error_msg = self.message_forwarder.forward_message(
-                message, session_num, tmux_session=tmux_session
+                message, session_num, tmux_session=tmux_session,
+                channel_id=channel_id
             )
             if not success:
                 return jsonify({'error': error_msg}), 500
