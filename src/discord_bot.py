@@ -15,9 +15,11 @@ Slash commands for channel lifecycle management:
 import os
 import sys
 import json
+import time
 import asyncio
 import logging
 import requests
+import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -503,6 +505,42 @@ def register_slash_commands(bot: ClaudeCLIBot, settings: SettingsManager):
             )
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @bot.tree.command(
+        name="remote",
+        description="Start Claude Code remote control for this channel's session"
+    )
+    async def remote_command(interaction: discord.Interaction):
+        channel_id = str(interaction.channel_id)
+        cfg = settings.get_channel_config(channel_id)
+        if cfg is None or not cfg.get('active', True):
+            await interaction.response.send_message(
+                "No active Claude session in this channel.", ephemeral=True
+            )
+            return
+
+        tmux_session = cfg.get('tmux_session', f"cb-{cfg.get('name', '')}")
+        try:
+            # Send /remote-control to the Claude CLI session
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', tmux_session, '/remote-control'],
+                check=True, capture_output=True,
+            )
+            time.sleep(0.2)
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', tmux_session, 'C-m'],
+                check=True, capture_output=True,
+            )
+            await interaction.response.send_message(
+                f"🔌 Sent `/remote-control` to `{tmux_session}`. "
+                f"Check the channel for the enrollment link, then open "
+                f"Claude on your phone or browser to continue this session.",
+                ephemeral=True
+            )
+        except subprocess.CalledProcessError as e:
+            await interaction.response.send_message(
+                f"Failed to send remote-control command: {e}", ephemeral=True
+            )
 
     # Keep legacy prefix commands for backward compat
     @bot.command(name='status')
